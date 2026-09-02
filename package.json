@@ -1,6 +1,6 @@
 {
   "name": "learned-experience",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Model-agnostic MCP server that gives any AI agent a persistent, self-improving catalogue of solved problems. Recall past fixes, record new ones, never learn the same thing twice.",
   "type": "module",
   "license": "MIT",
