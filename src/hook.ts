@@ -4,7 +4,9 @@
  *
  *   PostToolUseFailure  (Claude Code) a tool call failed -> recall by error text, inject matching fixes
  *   PostToolUse         (Codex) after every tool call -> same, but only when the response looks like a failure
+ *   AfterTool           (Gemini CLI) same as PostToolUse
  *   UserPromptSubmit    the user asked for something -> recall by the request, inject relevant past experience
+ *   BeforeAgent         (Gemini CLI) same as UserPromptSubmit
  *   Stop                the turn is ending -> if it had failures and nothing was recorded, ask once for a record
  *
  * Everything before the catalogue lookup is deterministic string processing. The hook never blocks
@@ -89,7 +91,7 @@ export function looksFailed(response: unknown, error?: unknown): boolean {
       const o = v as Record<string, unknown>;
       if (o.is_error === true || o.isError === true) return true;
       if (EXIT_KEYS.some((k) => typeof o[k] === "number" && o[k] !== 0)) return true;
-      if (typeof o.error === "string" && o.error.trim()) return true;
+      if (typeof o.error === "string" ? o.error.trim() !== "" : o.error != null && o.error !== false) return true;
       return Object.values(o).some((x) => walk(x, depth + 1));
     }
     return false;
@@ -153,17 +155,23 @@ export function formatContext(hits: RecallHit[], searched: number, quietOnMiss: 
     `${NAME}: ${hits.length} past experience${hits.length === 1 ? " matches" : "s match"} this failure.\n` +
     hits.map(hitLine).join("\n") +
     `\nApply the best-fitting fix first, then call ${NAME} \`reinforce\` with its id and whether it worked. ` +
-    `If none fit and you solve it another way, call \`record\` once.`
+    `If none fit and you solve it another way, call \`record\` once. If a hit is clearly unrelated, call \`dismiss\` with its id and this problem so it stops appearing here.`
   );
 }
 
 async function failureHook(input: HookInput, catalogue: Catalogue, opts: HookOptions, eventName: string): Promise<Record<string, unknown> | null> {
   const query = queryFromFailure(input);
   if (!query) return null;
-  const res = await catalogue.recall({ ...query, limit: opts.limit ?? 3 });
+  // Exact signal matches always surface; fuzzy matches need a clear margin or they are noise.
+  const res = await catalogue.recall({ ...query, limit: opts.limit ?? 3, min_score: 0.5 });
   const text = formatContext(res.hits, res.searched, opts.quietOnMiss ?? false);
   if (!text) return null;
-  return { hookSpecificOutput: { hookEventName: eventName, additionalContext: text } };
+  return contextOutput(eventName, text);
+}
+
+/** Claude Code and Codex read hookSpecificOutput.additionalContext; Gemini CLI reads the top-level field. Emit both. */
+function contextOutput(eventName: string, text: string): Record<string, unknown> {
+  return { additionalContext: text, hookSpecificOutput: { hookEventName: eventName, additionalContext: text } };
 }
 
 // ---------------------------------------------------------- user prompt hook
@@ -188,18 +196,17 @@ export function formatPromptContext(hits: RecallHit[]): string | null {
   return (
     `${NAME}: ${hits.length} past experience${hits.length === 1 ? " looks" : "s look"} relevant to this request.\n` +
     hits.map(hitLine).join("\n") +
-    `\nIf one applies, use it and call ${NAME} \`reinforce\` with the result. If none apply, ignore this.`
+    `\nIf one applies, use it and call ${NAME} \`reinforce\` with the result. If none apply, ignore this, or call \`dismiss\` with the id and this request if it keeps showing up wrongly.`
   );
 }
 
-async function promptHook(input: HookInput, catalogue: Catalogue, opts: HookOptions): Promise<Record<string, unknown> | null> {
+async function promptHook(input: HookInput, catalogue: Catalogue, opts: HookOptions, eventName: string): Promise<Record<string, unknown> | null> {
   const query = queryFromPrompt(input.prompt ?? "");
   if (!query) return null;
-  // Higher bar than the failure hook: a request is a weaker signal than an error string.
   const res = await catalogue.recall({ ...query, limit: opts.limit ?? 3, min_score: 0.5 });
   const text = formatPromptContext(res.hits);
   if (!text) return null;
-  return { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: text } };
+  return contextOutput(eventName, text);
 }
 
 // ------------------------------------------------------------------ stop hook
@@ -315,12 +322,14 @@ async function stopHook(input: HookInput, opts: HookOptions): Promise<Record<str
 /** Payload in, Claude Code hook JSON out (or null for silence). */
 export async function runHook(input: HookInput, catalogue: Catalogue, opts: HookOptions = {}): Promise<Record<string, unknown> | null> {
   switch (input.hook_event_name) {
-    case "UserPromptSubmit":
-      return promptHook(input, catalogue, opts);
+    case "UserPromptSubmit": // Claude Code, Codex
+    case "BeforeAgent": // Gemini CLI
+      return promptHook(input, catalogue, opts, input.hook_event_name);
     case "Stop":
       return stopHook(input, opts);
     case "PostToolUse": // Codex has no failure event: fire only when the response looks like one
-      return looksFailed(input.tool_response, input.error) ? failureHook(input, catalogue, opts, "PostToolUse") : null;
+    case "AfterTool": // Gemini CLI, same idea; tool_response carries an `error` field on failure
+      return looksFailed(input.tool_response, input.error) ? failureHook(input, catalogue, opts, input.hook_event_name) : null;
     case "PostToolUseFailure":
     case undefined: // older registrations passed no event name; treat as a failure payload
       return failureHook(input, catalogue, opts, "PostToolUseFailure");

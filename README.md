@@ -3,7 +3,8 @@
 **A memory of solved problems for AI agents.** Any agent that speaks MCP can check it before working, apply what worked last time, report whether it worked, and record new lessons. Nothing has to be learned twice, and the catalogue travels with you across models, tools, and machines.
 
 - **Works with any MCP host**: Claude Code, Claude Desktop, Cursor, Windsurf, Codex CLI, Gemini CLI, or anything built on an MCP client. The server, tools, and data are identical everywhere.
-- **Automatic in Claude Code and Codex**: hooks make recall and recording happen without the model having to remember.
+- **One-command setup**: `npx -y learned-experience install` detects your agents and configures each one.
+- **Automatic in Claude Code, Codex, and Gemini CLI**: hooks make recall and recording happen without the model having to remember.
 - **Your data, in one file**: a SQLite database you own, plus a small embedding model that runs on your machine. No account, no API key, nothing sent anywhere. Sync the file, export it, or serve it over HTTP to carry it between machines.
 - **Deterministic where it matters**: exact error fingerprints, lexical search, fixed-weight fusion, Bayesian confidence.
 - **Self-improving**: outcomes feed back into ranking, and duplicates are merged instead of stored twice.
@@ -13,24 +14,31 @@
 
 Requires Node 22.13 or newer.
 
-**Claude Code** (server plus hooks, one install):
+```bash
+npx -y learned-experience install
+```
+
+That detects the agents on your machine and configures each one: the MCP server everywhere, plus hooks where the host supports them. It is safe to re-run, backs up every file it touches (`<file>.bak`), never removes anything that is not its own, and `--dry-run` shows the plan without writing. Then restart the agents. The first use downloads a 23 MB embedding model into `~/.learned-experience/models`, after which everything runs offline.
+
+| Host | What `install` does | What you still do |
+|---|---|---|
+| Claude Code | Registers the server with `claude mcp add`, adds three hooks to `~/.claude/settings.json`. Skipped if the plugin below is installed. | Restart Claude Code |
+| Codex CLI | Registers the server with `codex mcp add`, adds three hooks to `~/.codex/hooks.json` | Run `/hooks` once in Codex to trust them |
+| Gemini CLI | Adds the server and two hooks to `~/.gemini/settings.json` | Nothing |
+| Cursor | Adds the server to `~/.cursor/mcp.json` | Add the two-line rule below (no hooks) |
+| Windsurf | Adds the server to `~/.codeium/windsurf/mcp_config.json` | Add the two-line rule below (no hooks) |
+| Claude Desktop | Adds the server to `claude_desktop_config.json` | Restart Claude Desktop |
+
+Pick hosts explicitly with `install codex gemini`, remove everything with `uninstall`, and use `--local` when running from a clone so hosts launch your build instead of the npm package.
+
+**Claude Code plugin** (alternative to the installer for Claude Code; same result, managed by Claude Code's plugin system):
 
 ```bash
 claude plugin marketplace add fitz2882/learned-experience
 claude plugin install learned-experience@learned-experience
 ```
 
-Restart Claude Code. That's it. The first use downloads a 23 MB embedding model into `~/.learned-experience/models`, then everything runs offline.
-
-**Codex CLI** (server plus hooks):
-
-```bash
-codex mcp add learned-experience -- npx -y learned-experience
-```
-
-Then merge [examples/codex-hooks.json](examples/codex-hooks.json) into `~/.codex/hooks.json` (create it if it does not exist), start Codex, and run `/hooks` once to review and trust the three entries. Codex refuses to run hooks it has not been shown.
-
-**Any other MCP host** (server only), for example Claude Desktop, Cursor, or Windsurf:
+**Any other MCP host**, by hand:
 
 ```json
 {
@@ -47,7 +55,7 @@ Then merge [examples/codex-hooks.json](examples/codex-hooks.json) into `~/.codex
 
 The MCP server, its eight tools, the record format, the search, and the database are the same on every host and with every model. Nothing in them knows which agent is calling. That is the part that makes the catalogue portable across providers.
 
-Hooks are not part of MCP. Each host decides whether it has hooks, which events exist, and what the payloads look like. Claude Code has a dedicated tool-failure event; Codex only has a general after-tool event, so the hook checks the response for signs of failure itself; Cursor and Claude Desktop have no hooks at all. The single `learned-experience hook` command understands both hook dialects, and hosts without hooks fall back to the protocol the server sends as MCP instructions, which every host injects into the model's context.
+Hooks are not part of MCP. Each host decides whether it has hooks, which events exist, and what the payloads look like. Claude Code has a dedicated tool-failure event. Codex and Gemini CLI only have a general after-tool event, so the hook checks the response for signs of failure itself. Cursor, Windsurf, and Claude Desktop have no hooks at all. The single `learned-experience hook` command understands every dialect it has been taught (Claude Code, Codex, Gemini CLI), and hosts without hooks fall back to the protocol the server sends as MCP instructions, which every host injects into the model's context.
 
 ## How it works
 
@@ -70,18 +78,19 @@ The loop the agent runs:
 2. **Apply** the best fix, respecting the avoid-list.
 3. **Reinforce**: report whether it worked. This is what makes ranking improve over time.
 4. **Record** anything non-trivial once solved. Duplicates are merged automatically, and the same symptom with a different fix is linked rather than duplicated.
+5. **Dismiss** a hit that did not apply. The record is never recalled for that query again, and its fuzzy matches are damped everywhere, so false positives fade instead of repeating.
 
 It learns from anything the agent records, not just tool errors: tricky refactors, surprising library behaviour, build configuration, design choices that turned out badly.
 
 ## What the hooks do
 
-MCP cannot see a model's reasoning, so without hooks the model has to remember to use the catalogue. In Claude Code and Codex, three hooks remove that dependency. All three run the same command, `learned-experience hook`:
+MCP cannot see a model's reasoning, so without hooks the model has to remember to use the catalogue. Hooks remove that dependency. They all run the same command, `learned-experience hook`, which dispatches on the host's event name:
 
-| Event | What happens |
-|---|---|
-| **A tool call fails** | The error text is turned into a query and matching fixes are injected into context, with the instruction to apply one and `reinforce`. On a miss, a one-line reminder to `record` once solved. In Codex, which has no failure event, the hook runs after every tool call and acts only when the response carries a non-zero exit code, an error flag, or unmistakable failure text. |
-| **You send a request** | The request is used as a query. If past experience looks relevant, it is injected before the model starts. Silent otherwise, and skipped for short prompts and slash commands. |
-| **The turn ends** | If the turn had failed tool calls (or was very long) and nothing was recorded, the model is asked once whether something is worth recording. It never asks twice in a turn, and never fires after a `record` or `reinforce`. |
+| Moment | Claude Code | Codex | Gemini CLI | What happens |
+|---|---|---|---|---|
+| **A tool call fails** | `PostToolUseFailure` | `PostToolUse` | `AfterTool` | The error text becomes a query. Matching fixes are injected with the instruction to apply one and `reinforce`. On a miss, a one-line reminder to `record` once solved. Codex and Gemini have no failure event, so the hook runs after every tool call and acts only when the response carries a non-zero exit code, an error flag, or unmistakable failure text. |
+| **You send a request** | `UserPromptSubmit` | `UserPromptSubmit` | `BeforeAgent` | The request becomes a query. If past experience looks relevant it is injected before the model starts. Silent otherwise; skipped for short prompts and slash commands. |
+| **The turn ends** | `Stop` | `Stop` | not available | If the turn had failed tool calls (or was very long) and nothing was recorded, the model is asked once whether something is worth recording. Never twice in a turn, never after a `record` or `reinforce`. |
 
 What the model sees after a failure:
 
@@ -93,7 +102,7 @@ Apply the best-fitting fix first, then call learned-experience `reinforce` with 
 
 Failures caused by you (interrupts, permission denials) and failures of learned-experience's own tools are ignored, so the hooks cannot loop.
 
-Without the Claude Code plugin, the same hooks can be added to `~/.claude/settings.json` (Codex users: see `examples/codex-hooks.json`, which uses `PostToolUse` instead of `PostToolUseFailure`):
+`install` writes these for you. By hand, the Claude Code shape in `~/.claude/settings.json` is:
 
 ```json
 {
@@ -104,6 +113,8 @@ Without the Claude Code plugin, the same hooks can be added to `~/.claude/settin
   }
 }
 ```
+
+Codex uses the same shape in `~/.codex/hooks.json` with `PostToolUse` (see [examples/codex-hooks.json](examples/codex-hooks.json)). Gemini CLI uses `hooks` inside `~/.gemini/settings.json` with `AfterTool` and `BeforeAgent`, timeouts in milliseconds, and a `name` on each hook.
 
 For hosts without hooks, the server sends its protocol as MCP instructions, which most hosts inject into the model's context. A two-line reminder in `CLAUDE.md`, `AGENTS.md`, or `.cursorrules` helps:
 
@@ -119,6 +130,7 @@ After applying a recalled fix, call `reinforce` with the result. After solving s
 | `recall` | Has this problem, or a similar one, been solved before? Returns ranked hits with fix, avoid-list, and confidence. |
 | `record` | Store a lesson. Merges or links duplicates automatically. |
 | `reinforce` | Report whether a recalled fix worked. Failure notes go on the avoid-list. |
+| `dismiss` | Report that a recalled record did not apply to the problem. Suppresses it for that query and damps its fuzzy matches. |
 | `amend` | Patch fields of an existing record. |
 | `forget` | Delete a record. |
 | `consolidate` | Cluster similar episodes so the agent can write one generalised `rule`. |
@@ -132,6 +144,9 @@ Resource `learned-experience://protocol` and prompt `solve` carry the same proto
 Useful for scripts, other hosts, or just looking at what you have:
 
 ```bash
+npx -y learned-experience install --dry-run          # show what setup would change
+npx -y learned-experience install codex gemini       # set up specific hosts
+npx -y learned-experience uninstall                  # remove everything it added
 npx -y learned-experience recall "postgres connection refused"
 npx -y learned-experience stats
 npx -y learned-experience export backup.jsonl

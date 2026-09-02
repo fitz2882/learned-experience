@@ -340,3 +340,46 @@ describe("portability", () => {
     expect(res.hits).toHaveLength(1);
   });
 });
+
+describe("dismiss (false positives)", () => {
+  it("suppresses the record for that query, damps its fuzzy matches elsewhere, and leaves exact matches alone", async () => {
+    const { cat } = make();
+    const r = await cat.record({ ...pgDown, problem: "Claude Code plugin fails to load with a duplicate hooks file error", signals: ["Duplicate hooks file detected"], context: ["claude-code", "plugin", "hooks"] });
+    const query = { problem: "Bash failed: which: no cursor in PATH for the plugin hooks", signals: ["which: no cursor in PATH for hooks"] };
+    const before = await cat.recall({ ...query, min_score: 0.1 });
+    expect(before.hits.map((h) => h.id)).toContain(r.id);
+
+    const updated = await cat.dismiss(r.id, query);
+    expect(updated.stats.dismissed).toBe(1);
+    expect(updated.dismissed_for.length).toBeGreaterThan(0);
+
+    const after = await cat.recall({ ...query, min_score: 0.1 });
+    expect(after.hits.map((h) => h.id)).not.toContain(r.id);
+
+    // A different fuzzy query still finds it, at a damped score.
+    const other = await cat.recall({ problem: "plugin hooks file duplicate error", min_score: 0.1 });
+    expect(other.hits[0]?.id).toBe(r.id);
+    expect(other.hits[0].match.exact).toBe(false);
+    const undamped = await cat.recall({ problem: "plugin hooks file duplicate error", min_score: 0.1 });
+    expect(undamped.hits[0].match.score).toBeCloseTo(other.hits[0].match.score);
+
+    // Exact matches are never damped or suppressed unless that exact query was dismissed.
+    const exact = await cat.recall({ problem: "x", signals: ["Duplicate hooks file detected"] });
+    expect(exact.hits[0]?.match.exact).toBe(true);
+    expect(exact.hits[0].match.score).toBeGreaterThan(0.8);
+
+    const s = await cat.stats();
+    expect(s.false_positives_dismissed).toBe(1);
+    await expect(cat.dismiss("x_nope", query)).rejects.toThrow(/no experience/);
+  });
+
+  it("dismissals survive export/import", async () => {
+    const src = make();
+    const r = await src.cat.record(pgDown);
+    await src.cat.dismiss(r.id, { problem: "unrelated swift build error", signals: ["error: cannot find type Foo"] });
+    const dst = make();
+    await dst.cat.importJsonl(await src.cat.exportJsonl());
+    const hits = await dst.cat.recall({ problem: "unrelated swift build error", signals: ["error: cannot find type Foo"], min_score: 0 });
+    expect(hits.hits.map((h) => h.id)).not.toContain(r.id);
+  });
+});

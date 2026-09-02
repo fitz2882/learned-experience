@@ -84,7 +84,9 @@ problem ──▶ recall ──▶ hit? ──yes──▶ apply fix ──▶ r
                         no ──▶ solve ──▶ record ──▶ (merge | link | create)
 ```
 
-`reinforce` is the only path by which outcomes enter the system. A failed application with a note appends that note to the record's `avoid` list, so the next reader is warned. Nothing here needs an LLM.
+`reinforce` is the path by which fix outcomes enter the system. A failed application with a note appends that note to the record's `avoid` list, so the next reader is warned. Nothing here needs an LLM.
+
+`dismiss` is the path by which matching outcomes enter the system, and it is deliberately separate: a record can hold an excellent fix and still be the wrong answer for a given query. A dismissal stores the query's deterministic keys (problem key plus signal keys) in the record's `dismissed_for` list, so that exact query never surfaces the record again, and increments `stats.dismissed`, which damps the record's fuzzy scores everywhere by `1 / (1 + 0.25 · dismissed)`. Exact fingerprint matches are never damped. Dismissals travel with the record through export and import.
 
 `consolidate` clusters similar episodes (union-find over cosine ≥ threshold, or token Jaccard when there is no embedder) and hands the clusters to the agent, which writes a single `kind: "rule"` record. Distillation is the one step that needs a model, so the model does it and the server stays deterministic.
 
@@ -120,7 +122,9 @@ In Claude Code the trigger is mechanical. One command, `learned-experience hook`
 
 Everything the hooks do before the lookup is deterministic string processing. They never fail loudly: any error is logged to stderr and the session continues.
 
-The plugin (`plugin/`) packages the MCP server and the hook so both install with one command; the repository root carries a `marketplace.json` so `claude plugin marketplace add fitz2882/learned-experience` works.
+**Gemini CLI** uses the same shapes under different names: `AfterTool` behaves like Codex's `PostToolUse`, `BeforeAgent` like `UserPromptSubmit`. Gemini reads `additionalContext` at the top level of the hook's output, so the hook emits it both there and under `hookSpecificOutput`. Gemini has no end-of-turn event with a transcript, so the record reminder is not available there.
+
+**Setup is automated** by `learned-experience install` (`src/install.ts`). It detects hosts by their config directories or CLIs, registers the server (through `claude mcp add` and `codex mcp add` where those CLIs exist, otherwise by editing the host's JSON or TOML), merges hooks into the host's hook file without touching entries it did not write, backs up every file it changes, and is idempotent. `--dry-run` reports the plan. `uninstall` reverses it. The plugin (`plugin/`) remains the Claude Code-native alternative; the repository root carries a `marketplace.json` so `claude plugin marketplace add fitz2882/learned-experience` works.
 
 ## What is deliberately not here
 

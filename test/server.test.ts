@@ -34,7 +34,7 @@ describe("MCP surface", () => {
     const { client } = await connect();
     expect(client.getInstructions()).toBe(PROTOCOL);
     const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-    expect(tools).toEqual(["amend", "consolidate", "forget", "recall", "record", "reinforce", "stats", "transfer"]);
+    expect(tools).toEqual(["amend", "consolidate", "dismiss", "forget", "recall", "record", "reinforce", "stats", "transfer"]);
     const recall = (await client.listTools()).tools.find((t) => t.name === "recall")!;
     expect(recall.annotations?.readOnlyHint).toBe(true);
     expect((await client.listResources()).resources.map((r) => r.uri)).toEqual(["learned-experience://protocol"]);

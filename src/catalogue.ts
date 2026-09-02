@@ -20,6 +20,7 @@ import {
   RecallHit,
   SCHEMA_VERSION,
   confidence,
+  relevance,
   round,
   toRecallHit,
 } from "./schema.js";
@@ -237,12 +238,14 @@ export class Catalogue {
     for (const h of lexHits) if (lexMax > 0) bump(h.id, wL * (h.score / lexMax), "lexical");
     for (const h of denseHits) if (h.score > 0) bump(h.id, wD * h.score, "semantic");
 
+    const queryKeys = new Set(queryKeysFor(problem, signals));
     const hits: RecallHit[] = [];
     for (const [id, { score, via }] of scores) {
       const doc = this.records.get(id);
       if (!doc || !kinds.has(doc.kind)) continue;
+      if (doc.dismissed_for.some((k) => queryKeys.has(k))) continue; // known false positive for this query
       const exact = via.has("fingerprint");
-      const base = exact ? 1 : Math.min(score, 1);
+      const base = exact ? 1 : Math.min(score, 1) * relevance(doc.stats);
       const final = base * (0.7 + 0.3 * confidence(doc.stats));
       if (!exact && final < minScore) continue;
       hits.push(toRecallHit(doc, { score: final, exact, via: [...via].sort() }));
@@ -324,7 +327,8 @@ export class Catalogue {
       v: SCHEMA_VERSION,
       fingerprint: fp,
       related: ordered,
-      stats: { uses: 0, successes: 0, failures: 0, merged: 0, last_used: null },
+      dismissed_for: [],
+      stats: { uses: 0, successes: 0, failures: 0, merged: 0, dismissed: 0, last_used: null },
       created: now,
       updated: now,
     };
@@ -355,6 +359,29 @@ export class Catalogue {
     let avoid = doc.avoid;
     if (!worked && note) avoid = capList([...avoid, clean(note, 200)], 8);
     const updated: Experience = { ...doc, stats, avoid, updated: now };
+    this.persist(updated, this.vectors.get(id) ?? null);
+    return updated;
+  }
+
+  // ----------------------------------------------------------------- dismiss
+
+  /**
+   * "This record was surfaced for a problem it does not apply to." Remembers the query so the
+   * record is never recalled for it again, and damps the record's fuzzy matches in general.
+   * Says nothing about whether the fix works: that is `reinforce`'s job.
+   */
+  async dismiss(id: string, query: { problem: string; signals?: string[] }): Promise<Experience> {
+    await this.sync();
+    const doc = this.records.get(id);
+    if (!doc) throw new Error(`no experience with id ${id}`);
+    const keys = queryKeysFor(clean(query.problem, 240), (query.signals ?? []).map((s) => clean(s, 300)));
+    const dismissed_for = capList(uniqueSorted([...doc.dismissed_for, ...keys]), 40);
+    const updated: Experience = {
+      ...doc,
+      dismissed_for,
+      stats: { ...doc.stats, dismissed: doc.stats.dismissed + 1 },
+      updated: this.opts.now().toISOString(),
+    };
     this.persist(updated, this.vectors.get(id) ?? null);
     return updated;
   }
@@ -450,6 +477,7 @@ export class Catalogue {
     let uses = 0;
     let successes = 0;
     let merged = 0;
+    let dismissed = 0;
     const ctx = new Map<string, number>();
     for (const r of all) {
       byOutcome[r.outcome]++;
@@ -457,6 +485,7 @@ export class Catalogue {
       uses += r.stats.uses;
       successes += r.stats.successes;
       merged += r.stats.merged;
+      dismissed += r.stats.dismissed;
       for (const c of r.context) ctx.set(c, (ctx.get(c) ?? 0) + 1);
     }
     const topContext = [...ctx.entries()]
@@ -471,6 +500,7 @@ export class Catalogue {
       total_successes: successes,
       success_rate: uses > 0 ? round(successes / uses) : null,
       duplicates_prevented: merged,
+      false_positives_dismissed: dismissed,
       embedded: this.vectors.size,
       embedding_model: this.embedderId,
       embedding_error: this.embedFailure,
@@ -550,6 +580,7 @@ export class Catalogue {
           successes: target.stats.successes + doc.stats.successes,
           failures: target.stats.failures + doc.stats.failures,
           merged: target.stats.merged + doc.stats.merged + 1,
+          dismissed: target.stats.dismissed + doc.stats.dismissed,
           last_used: [target.stats.last_used, doc.stats.last_used].filter(Boolean).sort().pop() ?? null,
         });
         this.store.setMeta(priorKey, JSON.stringify({ target: target.id, updated: doc.updated }));
@@ -567,6 +598,11 @@ export class Catalogue {
 
 function newId(): string {
   return `x_${randomBytes(6).toString("hex")}`;
+}
+
+/** Deterministic identity of a query, used to remember false positives: its problem key plus each signal key. */
+export function queryKeysFor(problem: string, signals: string[]): string[] {
+  return uniqueSorted([`p:${problemKey(problem)}`, ...signalKeys(signals).map((k) => `s:${k}`)]);
 }
 
 /** Text the embedding model sees. Problem-side only, so queries and records are symmetric. */
@@ -600,7 +636,7 @@ function sanitize(input: ExperienceInput): ExperienceInput {
 }
 
 function stripDerived(doc: Experience): ExperienceInput {
-  const { id: _i, v: _v, fingerprint: _f, related: _r, stats: _s, created: _c, updated: _u, ...input } = doc;
+  const { id: _i, v: _v, fingerprint: _f, related: _r, dismissed_for: _d, stats: _s, created: _c, updated: _u, ...input } = doc;
   return input;
 }
 

@@ -113,7 +113,7 @@ describe("runHook", () => {
     expect(text).toBe(
       "learned-experience: 1 past experience matches this failure.\n" +
         "1. [x_1] P | fix: F | avoid: A1; A2 | (confidence 0.25, score 0.61, unresolved last time)\n" +
-        "Apply the best-fitting fix first, then call learned-experience `reinforce` with its id and whether it worked. If none fit and you solve it another way, call `record` once."
+        "Apply the best-fitting fix first, then call learned-experience `reinforce` with its id and whether it worked. If none fit and you solve it another way, call `record` once. If a hit is clearly unrelated, call `dismiss` with its id and this problem so it stops appearing here."
     );
   });
 });
@@ -250,5 +250,32 @@ describe("Codex support", () => {
       l({ type: "event_msg", payload: { type: "token_count" } }),
     ].join("\n");
     expect(summarizeLastTurn(jsonl)).toEqual({ toolCalls: 3, failures: 1, recorded: true, recalled: false });
+  });
+});
+
+describe("Gemini CLI support", () => {
+  it("AfterTool fires on an error field and BeforeAgent recalls by prompt, emitting top-level additionalContext too", async () => {
+    const cat = new Catalogue(new Store(":memory:"), new FakeEmbedder());
+    await cat.record({
+      problem: "Vite dev server does not hot-reload inside Docker on macOS",
+      signals: [],
+      context: ["vite", "docker"],
+      fix: "Set server.watch.usePolling = true",
+      avoid: [],
+      outcome: "success",
+      kind: "episode",
+      attempts: [],
+    });
+    const ok = await runHook({ hook_event_name: "AfterTool", tool_name: "run_shell_command", tool_input: {}, tool_response: { llmContent: "done", returnDisplay: "done" } }, cat);
+    expect(ok).toBeNull();
+    const bad = (await runHook(
+      { hook_event_name: "AfterTool", tool_name: "run_shell_command", tool_input: { command: "npm test" }, tool_response: { llmContent: "Error: Cannot find module vitest", returnDisplay: "", error: { message: "Command failed" } } },
+      cat
+    ))!;
+    expect(bad.additionalContext).toMatch(/no past experience/);
+    expect((bad.hookSpecificOutput as { hookEventName: string }).hookEventName).toBe("AfterTool");
+    const before = (await runHook({ hook_event_name: "BeforeAgent", prompt: "the vite dev server in docker on my mac is not hot reloading, please fix" }, cat))!;
+    expect(before.additionalContext).toContain("usePolling");
+    expect((before.hookSpecificOutput as { hookEventName: string }).hookEventName).toBe("BeforeAgent");
   });
 });

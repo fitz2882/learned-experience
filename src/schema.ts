@@ -31,6 +31,7 @@ export const Stats = z.object({
   successes: z.number().int().nonnegative(),
   failures: z.number().int().nonnegative(),
   merged: z.number().int().nonnegative().describe("How many duplicate reports were folded into this record"),
+  dismissed: z.number().int().nonnegative().default(0).describe("How many times this record was surfaced for a problem it did not apply to"),
   last_used: z.string().nullable(),
 });
 export type Stats = z.infer<typeof Stats>;
@@ -64,6 +65,7 @@ export const Experience = ExperienceInput.extend({
   v: z.literal(SCHEMA_VERSION),
   fingerprint: z.string(),
   related: z.array(z.string()).default([]).describe("Ids of records with the same fingerprint but a different fix"),
+  dismissed_for: z.array(z.string()).default([]).describe("Query keys this record must not be recalled for again (false positives)"),
   stats: Stats,
   created: z.string(),
   updated: z.string(),
@@ -73,6 +75,14 @@ export type Experience = z.infer<typeof Experience>;
 /** Bayesian success rate: (successes + 1) / (uses + 2). New records sit at 0.5. */
 export function confidence(stats: Stats): number {
   return (stats.successes + 1) / (stats.uses + 2);
+}
+
+/**
+ * Damping applied to fuzzy (non-exact) matches of a record that keeps surfacing where it does not belong.
+ * 0 dismissals -> 1.0, 1 -> 0.8, 2 -> 0.67, 4 -> 0.5. Exact matches are never damped.
+ */
+export function relevance(stats: Stats): number {
+  return 1 / (1 + 0.25 * stats.dismissed);
 }
 
 /** Terse shape returned by recall. Optimised for tokens, not for completeness. */

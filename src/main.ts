@@ -12,6 +12,9 @@
  */
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
+import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
+import { ALL_HOSTS, formatReport, installHosts, type HostId } from "./install.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { configFromEnv, openCatalogue } from "./config.js";
@@ -22,16 +25,35 @@ function log(msg: string): void {
   process.stderr.write(`[learned-experience] ${msg}\n`);
 }
 
-type Command = "export" | "import" | "hook" | "recall" | "stats";
+type Command = "export" | "import" | "hook" | "recall" | "stats" | "install" | "uninstall";
+
+const USAGE =
+  "usage: learned-experience [--http [--port N] [--host H]]\n" +
+  "       learned-experience install [host ...] [--dry-run] [--local]   register server + hooks with detected agent hosts\n" +
+  "       learned-experience uninstall [host ...] [--dry-run]\n" +
+  "       learned-experience hook | recall <text> | stats | export <file> | import <file>\n" +
+  `hosts: ${ALL_HOSTS.join(", ")}\n`;
 
 function parseArgs(argv: string[]) {
-  const args = { http: false, port: 3111, host: "127.0.0.1", command: null as null | Command, file: "", text: "" };
+  const args = {
+    http: false,
+    port: 3111,
+    host: "127.0.0.1",
+    command: null as null | Command,
+    file: "",
+    text: "",
+    hosts: [] as HostId[],
+    dryRun: false,
+    local: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--http") args.http = true;
     else if (a === "--port") args.port = Number(argv[++i]);
     else if (a === "--host") args.host = argv[++i];
-    else if (a === "hook" || a === "stats") args.command = a;
+    else if (a === "--dry-run") args.dryRun = true;
+    else if (a === "--local") args.local = true;
+    else if (a === "hook" || a === "stats" || a === "install" || a === "uninstall") args.command = a;
     else if (a === "recall") {
       args.command = a;
       args.text = argv.slice(i + 1).join(" ");
@@ -40,11 +62,10 @@ function parseArgs(argv: string[]) {
       args.command = a;
       args.file = argv[++i] ?? "";
     } else if (a === "--help" || a === "-h") {
-      process.stdout.write(
-        "usage: learned-experience [--http [--port N] [--host H]] | hook | recall <text> | stats | export <file> | import <file>\n"
-      );
+      process.stdout.write(USAGE);
       process.exit(0);
-    }
+    } else if ((ALL_HOSTS as string[]).includes(a)) args.hosts.push(a as HostId);
+    else throw new Error(`unknown argument '${a}'\n${USAGE}`);
   }
   return args;
 }
@@ -52,6 +73,14 @@ function parseArgs(argv: string[]) {
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const cfg = configFromEnv();
+
+  if (args.command === "install" || args.command === "uninstall") {
+    const uninstall = args.command === "uninstall";
+    const launch = args.local ? { command: process.execPath, args: [fileURLToPath(new URL("./index.js", import.meta.url))] } : undefined;
+    const reports = installHosts({ home: homedir(), hosts: args.hosts.length ? args.hosts : undefined, dryRun: args.dryRun, uninstall, launch });
+    process.stdout.write(formatReport(reports, args.dryRun, uninstall));
+    return;
+  }
 
   if (args.command === "hook") {
     // Never break the user's session: any failure here is logged and swallowed.

@@ -1,5 +1,5 @@
 /**
- * MCP surface. Eight tools, one resource, one prompt. Tool descriptions are written for
+ * MCP surface. Nine tools, one resource, one prompt. Tool descriptions are written for
  * the model that will call them: when to call, what to pass, what comes back.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -10,13 +10,13 @@ import type { Catalogue } from "./catalogue.js";
 import { ExperienceInput, Kind, Outcome, Attempt, Source } from "./schema.js";
 
 export const SERVER_NAME = "learned-experience";
-export const SERVER_VERSION = "0.2.1";
+export const SERVER_VERSION = "0.3.0";
 
 export const PROTOCOL = `learned-experience: a persistent catalogue of problems this user's agents have solved before. It is shared across every model and tool the user works with. Use it so nothing has to be learned twice.
 
 THE LOOP
 1. TRIGGER -> recall. Before investigating an error, a failing command, a confusing behaviour, or any task you suspect has come up before, call \`recall\`. Put exact error text in \`signals\` (that is what makes matching deterministic) and a short generic statement in \`problem\`.
-2. APPLY -> reinforce. If a hit fits, try its \`fix\` first and respect its \`avoid\` list. Then call \`reinforce\` with worked=true or false. This feedback is what makes the catalogue improve over time. Skip this step and nothing learns.
+2. APPLY -> reinforce. If a hit fits, try its \`fix\` first and respect its \`avoid\` list. Then call \`reinforce\` with worked=true or false. This feedback is what makes the catalogue improve over time. Skip this step and nothing learns. If a hit clearly does not apply to the problem at hand, call \`dismiss\` with the same problem/signals so it stops surfacing for it.
 3. SOLVE -> record. After solving something non-trivial (more than one attempt, or not obvious next time), call \`record\` once. Generalise the problem statement, keep signals exact, state the fix concretely enough to repeat, and list what did not work in \`avoid\`. Record failures too: knowing a dead end is worth something.
 
 RULES
@@ -130,6 +130,31 @@ export function buildServer(catalogue: Catalogue, options: ServerOptions): McpSe
       try {
         const e = await catalogue.reinforce(id, worked, note);
         return json({ id: e.id, stats: e.stats, confidence: Math.round(((e.stats.successes + 1) / (e.stats.uses + 2)) * 1000) / 1000 });
+      } catch (e) {
+        return fail(e);
+      }
+    }
+  );
+
+  server.registerTool(
+    "dismiss",
+    {
+      title: "Mark a recalled record as irrelevant",
+      description:
+        "Feedback for matching, not for the fix: the record was surfaced for a problem it does not apply to. " +
+        "Pass the same problem/signals you queried with. The record will never be recalled for that query again and its fuzzy " +
+        "matches are damped. Use `reinforce` instead when you applied the fix and it failed.",
+      inputSchema: {
+        id: z.string().describe("Experience id that was irrelevant"),
+        problem: z.string().min(3).max(240).describe("The problem you were actually looking at"),
+        signals: z.array(z.string().max(300)).max(8).optional().describe("The exact error text you queried with, if any"),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ id, problem, signals }) => {
+      try {
+        const e = await catalogue.dismiss(id, { problem, signals });
+        return json({ id: e.id, dismissed: e.stats.dismissed, suppressed_queries: e.dismissed_for.length });
       } catch (e) {
         return fail(e);
       }
