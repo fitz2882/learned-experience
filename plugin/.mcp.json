@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "been-there": {
+    "learned-experience": {
       "command": "npx",
-      "args": ["-y", "been-there"]
+      "args": ["-y", "learned-experience"]
     }
   }
 }

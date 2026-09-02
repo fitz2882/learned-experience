@@ -37,7 +37,7 @@ describe("queryFromFailure", () => {
   });
 
   it("ignores its own tools and user interruptions", () => {
-    expect(queryFromFailure({ tool_name: "mcp__been-there__recall", error: "boom failed" })).toBeNull();
+    expect(queryFromFailure({ tool_name: "mcp__learned-experience__recall", error: "boom failed" })).toBeNull();
     expect(queryFromFailure({ tool_name: "Bash", error: "Command was interrupted by the user" })).toBeNull();
     expect(queryFromFailure({ tool_name: "Bash", error: "Permission denied by user" })).toBeNull();
     expect(queryFromFailure({ tool_name: "Bash", error: "" })).toBeNull();
@@ -83,7 +83,7 @@ describe("runHook", () => {
 
   it("stays silent for payloads that are not worth a lookup", async () => {
     const cat = new Catalogue(new Store(":memory:"), null);
-    expect(await runHook({ tool_name: "mcp__been-there__record", error: "x failed" }, cat)).toBeNull();
+    expect(await runHook({ tool_name: "mcp__learned-experience__record", error: "x failed" }, cat)).toBeNull();
   });
 
   it("formatContext is compact and deterministic", () => {
@@ -106,9 +106,9 @@ describe("runHook", () => {
       false
     )!;
     expect(text).toBe(
-      "been-there: 1 past experience matches this failure.\n" +
+      "learned-experience: 1 past experience matches this failure.\n" +
         "1. [x_1] P | fix: F | avoid: A1; A2 | (confidence 0.25, score 0.61, unresolved last time)\n" +
-        "Apply the best-fitting fix first, then call been-there `reinforce` with its id and whether it worked. If none fit and you solve it another way, call `record` once."
+        "Apply the best-fitting fix first, then call learned-experience `reinforce` with its id and whether it worked. If none fit and you solve it another way, call `record` once."
     );
   });
 });

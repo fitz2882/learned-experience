@@ -1,4 +1,4 @@
-# been-there
+# learned-experience
 
 A model-agnostic MCP server that gives any AI agent a persistent catalogue of problems it has solved before. The agent checks it when something goes wrong, applies what worked last time, reports whether it worked, and records new lessons. Nothing has to be learned twice, and the catalogue travels with you across models, tools, and machines.
 
@@ -14,21 +14,21 @@ Design rationale and the record schema are in [DESIGN.md](DESIGN.md).
 
 Requires Node 22.13 or newer. The package runs with `npx`, so nothing needs a global install.
 
-The first `recall` or `record` downloads the embedding model (about 23 MB) into `~/.been-there/models`. After that it runs offline.
+The first `recall` or `record` downloads the embedding model (about 23 MB) into `~/.learned-experience/models`. After that it runs offline.
 
 ## Connect an agent
 
 **Claude Code, the easy way: the plugin.** It installs the MCP server and a hook that recalls past fixes automatically whenever a tool call fails.
 
 ```bash
-claude plugin marketplace add fitz2882/been-there
-claude plugin install been-there@been-there
+claude plugin marketplace add fitz2882/learned-experience
+claude plugin install learned-experience@learned-experience
 ```
 
 **Claude Code, server only**
 
 ```bash
-claude mcp add --scope user been-there -- npx -y been-there
+claude mcp add --scope user learned-experience -- npx -y learned-experience
 ```
 
 **Claude Desktop, Cursor, Windsurf** (`claude_desktop_config.json`, `.cursor/mcp.json`, etc.)
@@ -36,9 +36,9 @@ claude mcp add --scope user been-there -- npx -y been-there
 ```json
 {
   "mcpServers": {
-    "been-there": {
+    "learned-experience": {
       "command": "npx",
-      "args": ["-y", "been-there"]
+      "args": ["-y", "learned-experience"]
     }
   }
 }
@@ -47,24 +47,24 @@ claude mcp add --scope user been-there -- npx -y been-there
 **Codex CLI** (`~/.codex/config.toml`)
 
 ```toml
-[mcp_servers.been-there]
+[mcp_servers.learned-experience]
 command = "npx"
-args = ["-y", "been-there"]
+args = ["-y", "learned-experience"]
 ```
 
-Running from a clone instead of npm: `npm install && npm run build`, then use `node /absolute/path/to/dist/index.js` in place of `npx -y been-there`.
+Running from a clone instead of npm: `npm install && npm run build`, then use `node /absolute/path/to/dist/index.js` in place of `npx -y learned-experience`.
 
 ## Automatic recall on failure (Claude Code hook)
 
-MCP cannot see a model's reasoning, so "check memory when something goes wrong" would normally depend on the model remembering to do it. In Claude Code it does not have to. A `PostToolUseFailure` hook runs `been-there hook`, which reads the failure payload, extracts the error lines, runs `recall` in-process, and injects the hits into the model's context:
+MCP cannot see a model's reasoning, so "check memory when something goes wrong" would normally depend on the model remembering to do it. In Claude Code it does not have to. A `PostToolUseFailure` hook runs `learned-experience hook`, which reads the failure payload, extracts the error lines, runs `recall` in-process, and injects the hits into the model's context:
 
 ```
-been-there: 1 past experience matches this failure.
+learned-experience: 1 past experience matches this failure.
 1. [x_9f1c2a4b] Global npm install fails with EACCES | fix: npm config set prefix ~/.npm-global … | avoid: sudo npm install -g | (confidence 0.8, exact match)
-Apply the best-fitting fix first, then call been-there `reinforce` with its id and whether it worked. If none fit and you solve it another way, call `record` once.
+Apply the best-fitting fix first, then call learned-experience `reinforce` with its id and whether it worked. If none fit and you solve it another way, call `record` once.
 ```
 
-When nothing matches it injects a one-line nudge to `record` the solution once found. Set `BEEN_THERE_HOOK_QUIET=1` to silence misses. Failures caused by the user (interrupts, permission denials) and failures of been-there's own tools are ignored.
+When nothing matches it injects a one-line nudge to `record` the solution once found. Set `LEARNED_EXPERIENCE_HOOK_QUIET=1` to silence misses. Failures caused by the user (interrupts, permission denials) and failures of learned-experience's own tools are ignored.
 
 The plugin registers the hook for you. Without the plugin, add it to `~/.claude/settings.json`:
 
@@ -72,7 +72,7 @@ The plugin registers the hook for you. Without the plugin, add it to `~/.claude/
 {
   "hooks": {
     "PostToolUseFailure": [
-      { "hooks": [{ "type": "command", "command": "npx -y been-there hook", "timeout": 30 }] }
+      { "hooks": [{ "type": "command", "command": "npx -y learned-experience hook", "timeout": 30 }] }
     ]
   }
 }
@@ -93,7 +93,7 @@ The endpoint is `http://127.0.0.1:3111/mcp`. Put it behind your own auth before 
 The server sends its protocol to the host as MCP `instructions`, which most hosts inject into the model's context. Hosts with rule files benefit from a reminder. Add this to `CLAUDE.md`, `AGENTS.md`, or `.cursorrules`:
 
 ```
-Before investigating any error or failing command, call the been-there `recall` tool with the exact error text in `signals`.
+Before investigating any error or failing command, call the learned-experience `recall` tool with the exact error text in `signals`.
 After applying a recalled fix, call `reinforce` with the result. After solving something non-trivial, call `record` once.
 ```
 
@@ -110,7 +110,7 @@ After applying a recalled fix, call `reinforce` with the result. After solving s
 | `stats` | Counts, success rate, duplicates prevented, embedding status. |
 | `transfer` | Export or import JSONL. |
 
-Resource `been-there://protocol` and prompt `solve` carry the same protocol text.
+Resource `learned-experience://protocol` and prompt `solve` carry the same protocol text.
 
 ### Example
 
@@ -135,24 +135,24 @@ Resource `been-there://protocol` and prompt `solve` carry the same protocol text
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `BEEN_THERE_HOME` | `~/.been-there` | Data directory (database and model cache) |
-| `BEEN_THERE_DB` | `$BEEN_THERE_HOME/experiences.db` | Explicit database path |
-| `BEEN_THERE_TRANSFER_DIR` | `$BEEN_THERE_HOME/transfers` | The only directory the `transfer` tool may read or write `.jsonl` files in |
-| `BEEN_THERE_EMBEDDINGS` | `local` | `local`, `openai`, `ollama`, or `none` (lexical only) |
-| `BEEN_THERE_EMBED_MODEL` | provider default | `Xenova/all-MiniLM-L6-v2`, `text-embedding-3-small`, `nomic-embed-text` |
-| `BEEN_THERE_EMBED_BASE_URL` | provider default | Any OpenAI-compatible endpoint, or the Ollama base URL |
-| `BEEN_THERE_EMBED_API_KEY` | `$OPENAI_API_KEY` | Key for remote providers |
-| `BEEN_THERE_HOOK_QUIET` | unset | `1` makes the failure hook silent when nothing matches |
+| `LEARNED_EXPERIENCE_HOME` | `~/.learned-experience` | Data directory (database and model cache) |
+| `LEARNED_EXPERIENCE_DB` | `$LEARNED_EXPERIENCE_HOME/experiences.db` | Explicit database path |
+| `LEARNED_EXPERIENCE_TRANSFER_DIR` | `$LEARNED_EXPERIENCE_HOME/transfers` | The only directory the `transfer` tool may read or write `.jsonl` files in |
+| `LEARNED_EXPERIENCE_EMBEDDINGS` | `local` | `local`, `openai`, `ollama`, or `none` (lexical only) |
+| `LEARNED_EXPERIENCE_EMBED_MODEL` | provider default | `Xenova/all-MiniLM-L6-v2`, `text-embedding-3-small`, `nomic-embed-text` |
+| `LEARNED_EXPERIENCE_EMBED_BASE_URL` | provider default | Any OpenAI-compatible endpoint, or the Ollama base URL |
+| `LEARNED_EXPERIENCE_EMBED_API_KEY` | `$OPENAI_API_KEY` | Key for remote providers |
+| `LEARNED_EXPERIENCE_HOOK_QUIET` | unset | `1` makes the failure hook silent when nothing matches |
 
 Changing the embedding model is safe. Stored vectors are tagged with the model id, and stale ones are recomputed at startup.
 
 ## Moving the catalogue
 
-Copy `~/.been-there/experiences.db` to another machine, or use JSONL:
+Copy `~/.learned-experience/experiences.db` to another machine, or use JSONL:
 
 ```bash
-npx -y been-there export experiences.jsonl
-npx -y been-there import experiences.jsonl
+npx -y learned-experience export experiences.jsonl
+npx -y learned-experience import experiences.jsonl
 ```
 
 Import merges rather than overwrites and is idempotent: importing the same file twice changes nothing. The CLI accepts any path; the `transfer` tool an agent calls is confined to the transfer directory so injected instructions cannot turn it into arbitrary file access. Several agents can share one database file at the same time; each server picks up the others' writes.

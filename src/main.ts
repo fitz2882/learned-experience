@@ -1,12 +1,12 @@
 /**
  * Main entry (loaded by index.ts after the warning filter is installed).
- *   been-there                 stdio transport (what every MCP host speaks)
- *   been-there --http [--port 3111] [--host 127.0.0.1]   streamable HTTP transport
- *   been-there hook            Claude Code PostToolUseFailure hook: payload on stdin, context JSON on stdout
- *   been-there export <file>   dump the catalogue as JSONL without an agent
- *   been-there import <file>   merge a JSONL file into the catalogue
+ *   learned-experience                 stdio transport (what every MCP host speaks)
+ *   learned-experience --http [--port 3111] [--host 127.0.0.1]   streamable HTTP transport
+ *   learned-experience hook            Claude Code PostToolUseFailure hook: payload on stdin, context JSON on stdout
+ *   learned-experience export <file>   dump the catalogue as JSONL without an agent
+ *   learned-experience import <file>   merge a JSONL file into the catalogue
  *
- * Environment: see config.ts. BEEN_THERE_HOOK_QUIET=1 silences the hook when nothing matches.
+ * Environment: see config.ts. LEARNED_EXPERIENCE_HOOK_QUIET=1 silences the hook when nothing matches.
  */
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
@@ -17,7 +17,7 @@ import { readStdin, runHook } from "./hook.js";
 import { buildServer } from "./server.js";
 
 function log(msg: string): void {
-  process.stderr.write(`[been-there] ${msg}\n`);
+  process.stderr.write(`[learned-experience] ${msg}\n`);
 }
 
 type Command = "export" | "import" | "hook";
@@ -34,7 +34,7 @@ function parseArgs(argv: string[]) {
       args.command = a;
       args.file = argv[++i] ?? "";
     } else if (a === "--help" || a === "-h") {
-      process.stdout.write("usage: been-there [--http [--port N] [--host H]] | hook | export <file> | import <file>\n");
+      process.stdout.write("usage: learned-experience [--http [--port N] [--host H]] | hook | export <file> | import <file>\n");
       process.exit(0);
     }
   }
@@ -50,7 +50,7 @@ async function main(): Promise<void> {
     try {
       const payload = JSON.parse(await readStdin()) as Parameters<typeof runHook>[0];
       const { store, catalogue } = await openCatalogue(cfg);
-      const out = await runHook(payload, catalogue, { quietOnMiss: process.env.BEEN_THERE_HOOK_QUIET === "1" });
+      const out = await runHook(payload, catalogue, { quietOnMiss: process.env.LEARNED_EXPERIENCE_HOOK_QUIET === "1" });
       store.close();
       if (out) process.stdout.write(JSON.stringify(out));
     } catch (e) {

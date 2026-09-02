@@ -1,11 +1,11 @@
 {
-  "name": "been-there",
+  "name": "learned-experience",
   "version": "0.1.0",
   "description": "Model-agnostic MCP server that gives any AI agent a persistent, self-improving catalogue of solved problems. Recall past fixes, record new ones, never learn the same thing twice.",
   "type": "module",
   "license": "MIT",
   "bin": {
-    "been-there": "dist/index.js"
+    "learned-experience": "dist/index.js"
   },
   "main": "dist/index.js",
   "files": [
@@ -23,7 +23,7 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "npm run build",
-    "smoke": "npm run build && node scripts/smoke.mjs dist/index.js .been-there"
+    "smoke": "npm run build && node scripts/smoke.mjs dist/index.js .learned-experience"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
@@ -38,11 +38,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/fitz2882/been-there.git"
+    "url": "git+https://github.com/fitz2882/learned-experience.git"
   },
-  "homepage": "https://github.com/fitz2882/been-there#readme",
+  "homepage": "https://github.com/fitz2882/learned-experience#readme",
   "bugs": {
-    "url": "https://github.com/fitz2882/been-there/issues"
+    "url": "https://github.com/fitz2882/learned-experience/issues"
   },
   "author": "Dave Fitzsimmons",
   "keywords": [

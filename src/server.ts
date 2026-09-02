@@ -9,10 +9,10 @@ import { z } from "zod";
 import type { Catalogue } from "./catalogue.js";
 import { ExperienceInput, Kind, Outcome, Attempt, Source } from "./schema.js";
 
-export const SERVER_NAME = "been-there";
+export const SERVER_NAME = "learned-experience";
 export const SERVER_VERSION = "0.1.0";
 
-export const PROTOCOL = `been-there: a persistent catalogue of problems this user's agents have solved before. It is shared across every model and tool the user works with. Use it so nothing has to be learned twice.
+export const PROTOCOL = `learned-experience: a persistent catalogue of problems this user's agents have solved before. It is shared across every model and tool the user works with. Use it so nothing has to be learned twice.
 
 THE LOOP
 1. TRIGGER -> recall. Before investigating an error, a failing command, a confusing behaviour, or any task you suspect has come up before, call \`recall\`. Put exact error text in \`signals\` (that is what makes matching deterministic) and a short generic statement in \`problem\`.
@@ -262,7 +262,7 @@ export function buildServer(catalogue: Catalogue, options: ServerOptions): McpSe
 
   server.registerResource(
     "protocol",
-    "been-there://protocol",
+    "learned-experience://protocol",
     { title: "How to use the experience catalogue", mimeType: "text/plain", description: "The recall -> apply -> reinforce -> record loop" },
     async (uri) => ({ contents: [{ uri: uri.href, mimeType: "text/plain", text: PROTOCOL }] })
   );

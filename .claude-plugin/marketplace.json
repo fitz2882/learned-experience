@@ -1,16 +1,16 @@
 {
   "$schema": "https://code.claude.com/schemas/marketplace.json",
-  "name": "been-there",
-  "description": "been-there: a self-improving experience catalogue for AI agents",
+  "name": "learned-experience",
+  "description": "learned-experience: a self-improving experience catalogue for AI agents",
   "owner": { "name": "Dave Fitzsimmons", "url": "https://github.com/fitz2882" },
   "plugins": [
     {
-      "name": "been-there",
-      "displayName": "Been There",
+      "name": "learned-experience",
+      "displayName": "Learned Experience",
       "source": "./plugin",
       "description": "MCP server plus a PostToolUseFailure hook that recalls past fixes automatically.",
-      "homepage": "https://github.com/fitz2882/been-there",
-      "repository": "https://github.com/fitz2882/been-there",
+      "homepage": "https://github.com/fitz2882/learned-experience",
+      "repository": "https://github.com/fitz2882/learned-experience",
       "license": "MIT"
     }
   ]

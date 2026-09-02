@@ -2,10 +2,10 @@
  * Runtime configuration from the environment. Shared by the MCP server, the CLI and the hook
  * so every entry point reads the same catalogue.
  *
- *   BEEN_THERE_HOME          data directory (default ~/.been-there)
- *   BEEN_THERE_DB            explicit database path (overrides BEEN_THERE_HOME/experiences.db)
- *   BEEN_THERE_TRANSFER_DIR  the only directory the transfer tool may touch (default BEEN_THERE_HOME/transfers)
- *   BEEN_THERE_EMBEDDINGS, BEEN_THERE_EMBED_MODEL, BEEN_THERE_EMBED_BASE_URL, BEEN_THERE_EMBED_API_KEY
+ *   LEARNED_EXPERIENCE_HOME          data directory (default ~/.learned-experience)
+ *   LEARNED_EXPERIENCE_DB            explicit database path (overrides LEARNED_EXPERIENCE_HOME/experiences.db)
+ *   LEARNED_EXPERIENCE_TRANSFER_DIR  the only directory the transfer tool may touch (default LEARNED_EXPERIENCE_HOME/transfers)
+ *   LEARNED_EXPERIENCE_EMBEDDINGS, LEARNED_EXPERIENCE_EMBED_MODEL, LEARNED_EXPERIENCE_EMBED_BASE_URL, LEARNED_EXPERIENCE_EMBED_API_KEY
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -21,11 +21,11 @@ export interface Config {
 }
 
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
-  const home = env.BEEN_THERE_HOME ?? join(homedir(), ".been-there");
+  const home = env.LEARNED_EXPERIENCE_HOME ?? join(homedir(), ".learned-experience");
   return {
     home,
-    dbPath: env.BEEN_THERE_DB ?? join(home, "experiences.db"),
-    transferDir: env.BEEN_THERE_TRANSFER_DIR ?? join(home, "transfers"),
+    dbPath: env.LEARNED_EXPERIENCE_DB ?? join(home, "experiences.db"),
+    transferDir: env.LEARNED_EXPERIENCE_TRANSFER_DIR ?? join(home, "transfers"),
     embedder: embedderConfigFromEnv(env, join(home, "models")),
   };
 }

@@ -1,4 +1,4 @@
-# been-there: design
+# learned-experience: design
 
 ## Goal
 
@@ -11,7 +11,7 @@ Two constraints shaped every decision:
 
 ## How it differs from adjacent work
 
-| | been-there | Google WikiSkill (arXiv 2608.27454) | General memory servers |
+| | learned-experience | Google WikiSkill (arXiv 2608.27454) | General memory servers |
 |---|---|---|---|
 | When knowledge is used | Online, at the moment of failure | Offline, compiled into SKILL.md between runs | Whenever the agent chooses |
 | Retrieval | Fingerprint + dense + BM25 | None (agent is barred from the wiki) | Usually vector only |
@@ -102,19 +102,19 @@ problem ──▶ recall ──▶ hit? ──yes──▶ apply fix ──▶ r
 
 ## Trigger
 
-MCP cannot intercept a model's reasoning, so on most hosts the "check memory when you hit a problem" trigger is prompt-driven. The server ships its protocol as `instructions` (every host injects those into the model's context), as the `been-there://protocol` resource, and as the `solve` prompt. Hosts with rule files (CLAUDE.md, .cursorrules, AGENTS.md) get a two-line snippet in the README.
+MCP cannot intercept a model's reasoning, so on most hosts the "check memory when you hit a problem" trigger is prompt-driven. The server ships its protocol as `instructions` (every host injects those into the model's context), as the `learned-experience://protocol` resource, and as the `solve` prompt. Hosts with rule files (CLAUDE.md, .cursorrules, AGENTS.md) get a two-line snippet in the README.
 
-In Claude Code the trigger is mechanical. A `PostToolUseFailure` hook runs `been-there hook`, which:
+In Claude Code the trigger is mechanical. A `PostToolUseFailure` hook runs `learned-experience hook`, which:
 
 1. reads the failure payload (`tool_name`, `tool_input`, `error`, `tool_response`);
-2. ignores failures the user caused (interrupts, permission denials) and failures of been-there's own tools, so it cannot loop;
+2. ignores failures the user caused (interrupts, permission denials) and failures of learned-experience's own tools, so it cannot loop;
 3. extracts up to four error-like lines as `signals`, tags the tool and the first word of a Bash command as `context`, and builds a generic `problem` line;
 4. runs `recall` in-process against the same database the MCP server uses;
 5. writes `hookSpecificOutput.additionalContext` with the hits (id, problem, fix, avoid, cause, confidence) and the instruction to `reinforce`, or a one-line nudge to `record` when nothing matches.
 
 Everything the hook does before the lookup is deterministic string processing. The hook never blocks and never fails loudly: any error is logged to stderr and the session continues.
 
-The plugin (`plugin/`) packages the MCP server and the hook so both install with one command; the repository root carries a `marketplace.json` so `claude plugin marketplace add fitz2882/been-there` works.
+The plugin (`plugin/`) packages the MCP server and the hook so both install with one command; the repository root carries a `marketplace.json` so `claude plugin marketplace add fitz2882/learned-experience` works.
 
 ## What is deliberately not here
 

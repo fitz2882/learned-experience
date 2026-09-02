@@ -50,7 +50,7 @@ export function responseText(value: unknown, depth = 0): string {
 /** Turn a failure payload into a recall query. Returns null when the failure is not worth a lookup. */
 export function queryFromFailure(input: HookInput): HookQuery | null {
   const tool = input.tool_name ?? "";
-  if (!tool || /^mcp__been-there__/.test(tool)) return null; // never react to our own tools
+  if (!tool || /^mcp__learned-experience__/.test(tool)) return null; // never react to our own tools
   const error = typeof input.error === "string" ? input.error : responseText(input.error);
   if (SKIP_ERROR.test(error)) return null;
 
@@ -84,8 +84,8 @@ export function formatContext(hits: RecallHit[], searched: number, quietOnMiss: 
   if (hits.length === 0) {
     if (quietOnMiss) return null;
     return (
-      `been-there: no past experience matches this failure (searched ${searched} records). ` +
-      `If solving it takes more than one attempt, call been-there \`record\` once when done.`
+      `learned-experience: no past experience matches this failure (searched ${searched} records). ` +
+      `If solving it takes more than one attempt, call learned-experience \`record\` once when done.`
     );
   }
   const lines = hits.map((h, i) => {
@@ -97,9 +97,9 @@ export function formatContext(hits: RecallHit[], searched: number, quietOnMiss: 
     return parts.join(" | ");
   });
   return (
-    `been-there: ${hits.length} past experience${hits.length === 1 ? " matches" : "s match"} this failure.\n` +
+    `learned-experience: ${hits.length} past experience${hits.length === 1 ? " matches" : "s match"} this failure.\n` +
     lines.join("\n") +
-    `\nApply the best-fitting fix first, then call been-there \`reinforce\` with its id and whether it worked. ` +
+    `\nApply the best-fitting fix first, then call learned-experience \`reinforce\` with its id and whether it worked. ` +
     `If none fit and you solve it another way, call \`record\` once.`
   );
 }

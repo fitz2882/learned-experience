@@ -3,10 +3,10 @@
  * ONNX so semantic recall works offline, with no API key, on any host.
  * Remote providers are opt-in via environment variables.
  *
- *   BEEN_THERE_EMBEDDINGS = local | openai | ollama | none   (default: local)
- *   BEEN_THERE_EMBED_MODEL = model id for the chosen provider
- *   BEEN_THERE_EMBED_BASE_URL = base URL for openai-compatible / ollama endpoints
- *   BEEN_THERE_EMBED_API_KEY (falls back to OPENAI_API_KEY)
+ *   LEARNED_EXPERIENCE_EMBEDDINGS = local | openai | ollama | none   (default: local)
+ *   LEARNED_EXPERIENCE_EMBED_MODEL = model id for the chosen provider
+ *   LEARNED_EXPERIENCE_EMBED_BASE_URL = base URL for openai-compatible / ollama endpoints
+ *   LEARNED_EXPERIENCE_EMBED_API_KEY (falls back to OPENAI_API_KEY)
  */
 
 export interface Embedder {
@@ -26,15 +26,15 @@ export interface EmbedderConfig {
 }
 
 export function embedderConfigFromEnv(env: NodeJS.ProcessEnv, cacheDir: string): EmbedderConfig {
-  const kind = (env.BEEN_THERE_EMBEDDINGS ?? "local").toLowerCase() as EmbedderKind;
+  const kind = (env.LEARNED_EXPERIENCE_EMBEDDINGS ?? "local").toLowerCase() as EmbedderKind;
   if (!["local", "openai", "ollama", "none"].includes(kind)) {
-    throw new Error(`BEEN_THERE_EMBEDDINGS must be one of local|openai|ollama|none, got '${kind}'`);
+    throw new Error(`LEARNED_EXPERIENCE_EMBEDDINGS must be one of local|openai|ollama|none, got '${kind}'`);
   }
   return {
     kind,
-    model: env.BEEN_THERE_EMBED_MODEL,
-    baseUrl: env.BEEN_THERE_EMBED_BASE_URL,
-    apiKey: env.BEEN_THERE_EMBED_API_KEY ?? env.OPENAI_API_KEY,
+    model: env.LEARNED_EXPERIENCE_EMBED_MODEL,
+    baseUrl: env.LEARNED_EXPERIENCE_EMBED_BASE_URL,
+    apiKey: env.LEARNED_EXPERIENCE_EMBED_API_KEY ?? env.OPENAI_API_KEY,
     cacheDir,
   };
 }
