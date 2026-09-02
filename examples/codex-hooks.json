@@ -1,0 +1,39 @@
+{
+  "description": "learned-experience: recall past fixes after failed tool calls and on new requests; ask for a record after eventful turns.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y learned-experience hook",
+            "timeout": 30,
+            "statusMessage": "learned-experience: checking past experience"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y learned-experience hook",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y learned-experience hook",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

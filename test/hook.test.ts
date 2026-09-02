@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Catalogue } from "../src/catalogue.js";
-import { formatContext, hookOptionsFromEnv, queryFromFailure, queryFromPrompt, responseText, runHook, stopDecision, summarizeLastTurn } from "../src/hook.js";
+import { formatContext, hookOptionsFromEnv, looksFailed, queryFromFailure, queryFromPrompt, responseText, runHook, stopDecision, summarizeLastTurn } from "../src/hook.js";
 import { Store } from "../src/store.js";
 import { FakeEmbedder } from "./fake-embedder.js";
 
@@ -204,5 +204,51 @@ describe("Stop hook", () => {
       quietOnMiss: true,
     });
     expect(hookOptionsFromEnv({})).toMatchObject({ stopNudge: true, quietOnMiss: false });
+  });
+});
+
+describe("Codex support", () => {
+  it("looksFailed detects explicit flags, exit fields and unmistakable text, but not the word error", () => {
+    expect(looksFailed({ output: "ok", metadata: { exit_code: 0 } })).toBe(false);
+    expect(looksFailed({ output: "boom", metadata: { exit_code: 2 } })).toBe(true);
+    expect(looksFailed({ is_error: true })).toBe(true);
+    expect(looksFailed("Command exited with code 1")).toBe(true);
+    expect(looksFailed([{ type: "input_text", text: "Script failed\nTraceback (most recent call last):" }])).toBe(true);
+    expect(looksFailed('{"output":"done","metadata":{"exit_code":0}}')).toBe(false);
+    expect(looksFailed('{"output":"...","metadata":{"exit_code":127}}')).toBe(true);
+    expect(looksFailed("grep found 3 lines containing the word error")).toBe(false);
+    expect(looksFailed("fine", "Command exited with code 1")).toBe(true);
+    expect(looksFailed(null)).toBe(false);
+  });
+
+  it("PostToolUse fires only for responses that look like failures", async () => {
+    const cat = new Catalogue(new Store(":memory:"), null);
+    const ok = await runHook({ hook_event_name: "PostToolUse", tool_name: "shell", tool_input: { command: ["ls"] }, tool_response: { output: "a\nb", metadata: { exit_code: 0 } } }, cat);
+    expect(ok).toBeNull();
+    const bad = (await runHook(
+      { hook_event_name: "PostToolUse", tool_name: "shell", tool_input: { command: "npm test" }, tool_response: { output: "Error: Cannot find module vitest", metadata: { exit_code: 1 } } },
+      cat
+    ))!;
+    expect((bad.hookSpecificOutput as { hookEventName: string }).hookEventName).toBe("PostToolUse");
+    expect((bad.hookSpecificOutput as { additionalContext: string }).additionalContext).toMatch(/no past experience/);
+  });
+
+  it("summarises the last turn of a Codex rollout", () => {
+    const l = (o: unknown) => JSON.stringify(o);
+    const jsonl = [
+      l({ type: "session_meta", payload: {} }),
+      l({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "old request" }] } }),
+      l({ type: "response_item", payload: { type: "function_call", name: "shell", arguments: "{}" } }),
+      l({ type: "response_item", payload: { type: "function_call_output", output: '{"output":"x","metadata":{"exit_code":1}}' } }),
+      l({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "new request" }] } }),
+      l({ type: "response_item", payload: { type: "custom_tool_call", name: "exec", input: "..." } }),
+      l({ type: "response_item", payload: { type: "custom_tool_call_output", output: [{ type: "input_text", text: "Script failed\nOutput:\nboom" }] } }),
+      l({ type: "response_item", payload: { type: "function_call", name: "shell", arguments: "{}" } }),
+      l({ type: "response_item", payload: { type: "function_call_output", output: '{"output":"ok","metadata":{"exit_code":0}}' } }),
+      l({ type: "response_item", payload: { type: "function_call", name: "mcp__learned-experience__record", arguments: "{}" } }),
+      l({ type: "response_item", payload: { type: "function_call_output", output: '{"id":"x_1"}' } }),
+      l({ type: "event_msg", payload: { type: "token_count" } }),
+    ].join("\n");
+    expect(summarizeLastTurn(jsonl)).toEqual({ toolCalls: 3, failures: 1, recorded: true, recalled: false });
   });
 });

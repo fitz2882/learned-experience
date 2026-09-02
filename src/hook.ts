@@ -1,7 +1,9 @@
 /**
- * Claude Code hooks. One command, `learned-experience hook`, dispatches on the event name:
+ * Agent hooks (Claude Code and Codex CLI share the format). One command, `learned-experience hook`,
+ * dispatches on the event name:
  *
- *   PostToolUseFailure  a tool call failed -> recall by error text, inject matching fixes
+ *   PostToolUseFailure  (Claude Code) a tool call failed -> recall by error text, inject matching fixes
+ *   PostToolUse         (Codex) after every tool call -> same, but only when the response looks like a failure
  *   UserPromptSubmit    the user asked for something -> recall by the request, inject relevant past experience
  *   Stop                the turn is ending -> if it had failures and nothing was recorded, ask once for a record
  *
@@ -69,6 +71,32 @@ export function responseText(value: unknown, depth = 0): string {
   return String(value);
 }
 
+const FAILED_TEXT = /("exit_code"\s*:\s*[1-9]\d*|\bexit(ed with)? code[: ]+[1-9]\d*|^\s*Script failed|Traceback \(most recent call last\)|command not found)/im;
+const EXIT_KEYS = ["exit_code", "exitCode", "exit_status", "status_code", "returncode"];
+
+/**
+ * Did a tool call fail? Used where the host has no failure-specific event (Codex `PostToolUse`)
+ * and for tool outputs inside transcripts. Deterministic: explicit error flags, non-zero exit
+ * fields, or unmistakable failure text. Plain occurrences of the word "error" do not count.
+ */
+export function looksFailed(response: unknown, error?: unknown): boolean {
+  if (error != null && error !== "" && error !== false) return true;
+  const walk = (v: unknown, depth: number): boolean => {
+    if (v == null || depth > 4) return false;
+    if (typeof v === "string") return FAILED_TEXT.test(v);
+    if (Array.isArray(v)) return v.some((x) => walk(x, depth + 1));
+    if (typeof v === "object") {
+      const o = v as Record<string, unknown>;
+      if (o.is_error === true || o.isError === true) return true;
+      if (EXIT_KEYS.some((k) => typeof o[k] === "number" && o[k] !== 0)) return true;
+      if (typeof o.error === "string" && o.error.trim()) return true;
+      return Object.values(o).some((x) => walk(x, depth + 1));
+    }
+    return false;
+  };
+  return walk(response, 0);
+}
+
 function uniq(items: string[]): string[] {
   const seen = new Set<string>();
   return items.filter((i) => (seen.has(i) ? false : (seen.add(i), true)));
@@ -129,13 +157,13 @@ export function formatContext(hits: RecallHit[], searched: number, quietOnMiss: 
   );
 }
 
-async function failureHook(input: HookInput, catalogue: Catalogue, opts: HookOptions): Promise<Record<string, unknown> | null> {
+async function failureHook(input: HookInput, catalogue: Catalogue, opts: HookOptions, eventName: string): Promise<Record<string, unknown> | null> {
   const query = queryFromFailure(input);
   if (!query) return null;
   const res = await catalogue.recall({ ...query, limit: opts.limit ?? 3 });
   const text = formatContext(res.hits, res.searched, opts.quietOnMiss ?? false);
   if (!text) return null;
-  return { hookSpecificOutput: { hookEventName: "PostToolUseFailure", additionalContext: text } };
+  return { hookSpecificOutput: { hookEventName: eventName, additionalContext: text } };
 }
 
 // ---------------------------------------------------------- user prompt hook
@@ -183,44 +211,70 @@ export interface TurnSummary {
   recalled: boolean;
 }
 
+type TurnItem = { kind: "user" } | { kind: "tool_use"; name: string } | { kind: "tool_result"; failed: boolean };
+
 /**
- * Summarise the last turn of a Claude Code transcript (JSONL): how many tool calls, how many failed,
+ * Normalise one transcript line into turn items. Two shapes are understood:
+ *   Claude Code: { type: "user"|"assistant", message: { role, content: string | [{type: text|tool_use|tool_result}] } }
+ *   Codex:       { type: "response_item", payload: { type: message|function_call|custom_tool_call|local_shell_call|
+ *                  function_call_output|custom_tool_call_output, role?, name?, output? } }
+ * Anything else yields nothing.
+ */
+function turnItems(e: Record<string, unknown>): TurnItem[] {
+  const message = e.message as { role?: string; content?: unknown } | undefined;
+  if (message && message.content !== undefined) {
+    const c = message.content;
+    const blocks: Array<Record<string, unknown>> = typeof c === "string" ? [{ type: "text", text: c }] : Array.isArray(c) ? c : [];
+    const isUser = e.type === "user" || message.role === "user";
+    if (isUser && blocks.length > 0 && blocks.every((b) => b.type === "text")) return [{ kind: "user" }];
+    const out: TurnItem[] = [];
+    for (const b of blocks) {
+      if (b.type === "tool_use") out.push({ kind: "tool_use", name: String(b.name ?? "") });
+      else if (b.type === "tool_result") out.push({ kind: "tool_result", failed: b.is_error === true || looksFailed(b.content) });
+    }
+    return out;
+  }
+  const p = e.payload as Record<string, unknown> | undefined;
+  if (!p || typeof p !== "object") return [];
+  if (e.type === "event_msg" && p.type === "user_message") return [{ kind: "user" }];
+  if (e.type !== "response_item") return [];
+  if (p.type === "message" && p.role === "user") return [{ kind: "user" }];
+  if (p.type === "function_call" || p.type === "custom_tool_call" || p.type === "local_shell_call") {
+    return [{ kind: "tool_use", name: String(p.name ?? p.type) }];
+  }
+  if (p.type === "function_call_output" || p.type === "custom_tool_call_output") {
+    return [{ kind: "tool_result", failed: looksFailed(p.output) }];
+  }
+  return [];
+}
+
+/**
+ * Summarise the last turn of a transcript (JSONL): how many tool calls, how many failed,
  * and whether the model already talked to the catalogue. Unknown line shapes are ignored.
  */
 export function summarizeLastTurn(jsonl: string): TurnSummary {
-  const entries: Array<{ type?: string; message?: { role?: string; content?: unknown } }> = [];
+  const items: TurnItem[] = [];
   for (const line of jsonl.split(/\r?\n/)) {
     if (!line.trim()) continue;
     try {
-      entries.push(JSON.parse(line));
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed === "object") items.push(...turnItems(parsed as Record<string, unknown>));
     } catch {
       /* skip malformed lines */
     }
   }
-  const blocks = (e: (typeof entries)[number]): Array<Record<string, unknown>> => {
-    const c = e.message?.content;
-    if (typeof c === "string") return [{ type: "text", text: c }];
-    return Array.isArray(c) ? (c as Array<Record<string, unknown>>) : [];
-  };
-  // The turn starts at the last human message: a user entry with text and no tool results.
   let start = 0;
-  for (let i = 0; i < entries.length; i++) {
-    const e = entries[i];
-    if (e.type !== "user" && e.message?.role !== "user") continue;
-    const b = blocks(e);
-    if (b.length > 0 && b.every((x) => x.type === "text")) start = i;
-  }
+  items.forEach((it, i) => {
+    if (it.kind === "user") start = i;
+  });
   const summary: TurnSummary = { toolCalls: 0, failures: 0, recorded: false, recalled: false };
-  for (const e of entries.slice(start)) {
-    for (const b of blocks(e)) {
-      if (b.type === "tool_use") {
-        summary.toolCalls++;
-        const name = String(b.name ?? "");
-        if (OWN_TOOL.test(name) && /(record|reinforce)$/.test(name)) summary.recorded = true;
-        if (OWN_TOOL.test(name) && /recall$/.test(name)) summary.recalled = true;
-      } else if (b.type === "tool_result" && b.is_error === true) {
-        summary.failures++;
-      }
+  for (const it of items.slice(start)) {
+    if (it.kind === "tool_use") {
+      summary.toolCalls++;
+      if (OWN_TOOL.test(it.name) && /(record|reinforce)$/.test(it.name)) summary.recorded = true;
+      if (OWN_TOOL.test(it.name) && /recall$/.test(it.name)) summary.recalled = true;
+    } else if (it.kind === "tool_result" && it.failed) {
+      summary.failures++;
     }
   }
   return summary;
@@ -265,9 +319,11 @@ export async function runHook(input: HookInput, catalogue: Catalogue, opts: Hook
       return promptHook(input, catalogue, opts);
     case "Stop":
       return stopHook(input, opts);
+    case "PostToolUse": // Codex has no failure event: fire only when the response looks like one
+      return looksFailed(input.tool_response, input.error) ? failureHook(input, catalogue, opts, "PostToolUse") : null;
     case "PostToolUseFailure":
     case undefined: // older registrations passed no event name; treat as a failure payload
-      return failureHook(input, catalogue, opts);
+      return failureHook(input, catalogue, opts, "PostToolUseFailure");
     default:
       return null;
   }

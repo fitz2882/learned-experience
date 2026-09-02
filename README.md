@@ -2,9 +2,9 @@
 
 **A memory of solved problems for AI agents.** Any agent that speaks MCP can check it before working, apply what worked last time, report whether it worked, and record new lessons. Nothing has to be learned twice, and the catalogue travels with you across models, tools, and machines.
 
-- **Works with any MCP host**: Claude Code, Claude Desktop, Cursor, Windsurf, Codex CLI, Gemini CLI, or anything built on an MCP client.
-- **Automatic in Claude Code**: three hooks make recall and recording happen without the model having to remember.
-- **Local, offline, no API key**: one SQLite file and a small embedding model that runs on your machine.
+- **Works with any MCP host**: Claude Code, Claude Desktop, Cursor, Windsurf, Codex CLI, Gemini CLI, or anything built on an MCP client. The server, tools, and data are identical everywhere.
+- **Automatic in Claude Code and Codex**: hooks make recall and recording happen without the model having to remember.
+- **Your data, in one file**: a SQLite database you own, plus a small embedding model that runs on your machine. No account, no API key, nothing sent anywhere. Sync the file, export it, or serve it over HTTP to carry it between machines.
 - **Deterministic where it matters**: exact error fingerprints, lexical search, fixed-weight fusion, Bayesian confidence.
 - **Self-improving**: outcomes feed back into ranking, and duplicates are merged instead of stored twice.
 - **Portable**: JSONL export and import, with secrets redacted and paths made machine-independent.
@@ -22,6 +22,14 @@ claude plugin install learned-experience@learned-experience
 
 Restart Claude Code. That's it. The first use downloads a 23 MB embedding model into `~/.learned-experience/models`, then everything runs offline.
 
+**Codex CLI** (server plus hooks):
+
+```bash
+codex mcp add learned-experience -- npx -y learned-experience
+```
+
+Then merge [examples/codex-hooks.json](examples/codex-hooks.json) into `~/.codex/hooks.json` (create it if it does not exist), start Codex, and run `/hooks` once to review and trust the three entries. Codex refuses to run hooks it has not been shown.
+
 **Any other MCP host** (server only), for example Claude Desktop, Cursor, or Windsurf:
 
 ```json
@@ -35,13 +43,11 @@ Restart Claude Code. That's it. The first use downloads a 23 MB embedding model 
 }
 ```
 
-Codex CLI (`~/.codex/config.toml`):
+## What is universal and what is per host
 
-```toml
-[mcp_servers.learned-experience]
-command = "npx"
-args = ["-y", "learned-experience"]
-```
+The MCP server, its eight tools, the record format, the search, and the database are the same on every host and with every model. Nothing in them knows which agent is calling. That is the part that makes the catalogue portable across providers.
+
+Hooks are not part of MCP. Each host decides whether it has hooks, which events exist, and what the payloads look like. Claude Code has a dedicated tool-failure event; Codex only has a general after-tool event, so the hook checks the response for signs of failure itself; Cursor and Claude Desktop have no hooks at all. The single `learned-experience hook` command understands both hook dialects, and hosts without hooks fall back to the protocol the server sends as MCP instructions, which every host injects into the model's context.
 
 ## How it works
 
@@ -67,13 +73,13 @@ The loop the agent runs:
 
 It learns from anything the agent records, not just tool errors: tricky refactors, surprising library behaviour, build configuration, design choices that turned out badly.
 
-## What the Claude Code hooks do
+## What the hooks do
 
-MCP cannot see a model's reasoning, so on most hosts the model has to remember to use the catalogue. In Claude Code the plugin removes that dependency with three hooks, all running the same command, `learned-experience hook`:
+MCP cannot see a model's reasoning, so without hooks the model has to remember to use the catalogue. In Claude Code and Codex, three hooks remove that dependency. All three run the same command, `learned-experience hook`:
 
 | Event | What happens |
 |---|---|
-| **A tool call fails** | The error text is turned into a query and matching fixes are injected into context, with the instruction to apply one and `reinforce`. On a miss, a one-line reminder to `record` once solved. |
+| **A tool call fails** | The error text is turned into a query and matching fixes are injected into context, with the instruction to apply one and `reinforce`. On a miss, a one-line reminder to `record` once solved. In Codex, which has no failure event, the hook runs after every tool call and acts only when the response carries a non-zero exit code, an error flag, or unmistakable failure text. |
 | **You send a request** | The request is used as a query. If past experience looks relevant, it is injected before the model starts. Silent otherwise, and skipped for short prompts and slash commands. |
 | **The turn ends** | If the turn had failed tool calls (or was very long) and nothing was recorded, the model is asked once whether something is worth recording. It never asks twice in a turn, and never fires after a `record` or `reinforce`. |
 
@@ -87,7 +93,7 @@ Apply the best-fitting fix first, then call learned-experience `reinforce` with 
 
 Failures caused by you (interrupts, permission denials) and failures of learned-experience's own tools are ignored, so the hooks cannot loop.
 
-Without the plugin, the same hooks can be added to `~/.claude/settings.json`:
+Without the Claude Code plugin, the same hooks can be added to `~/.claude/settings.json` (Codex users: see `examples/codex-hooks.json`, which uses `PostToolUse` instead of `PostToolUseFailure`):
 
 ```json
 {
@@ -133,13 +139,17 @@ npx -y learned-experience import backup.jsonl
 npx -y learned-experience --http --port 3111      # streamable HTTP at http://127.0.0.1:3111/mcp
 ```
 
-The HTTP mode is for hosts that want a URL, or for sharing one catalogue across machines. Put it behind your own auth before exposing it beyond localhost.
+HTTP mode is for hosts that want a URL, or for sharing one catalogue across machines (see below).
 
-## Moving the catalogue
+## Taking it with you
 
-Everything lives in `~/.learned-experience/experiences.db`. Copy that file to another machine, or use `export` and `import`. Import merges rather than overwrites and is idempotent: importing the same file twice changes nothing. Embeddings are not exported; the destination recomputes them with its own model.
+"Local" means the data is yours and nothing phones home. It does not mean the catalogue is stuck on one machine. Everything lives in one file, `~/.learned-experience/experiences.db`, and there are three ways to carry it:
 
-Several agents can share one database at the same time. Each server picks up the others' writes.
+1. **Sync the folder.** Point `LEARNED_EXPERIENCE_HOME` at a directory in iCloud Drive, Dropbox, Syncthing, or a git repo, on every machine. Simplest, and fine when one machine at a time is writing. Two machines writing at the same moment through a file-sync service can conflict, as with any SQLite file; if that is your situation, use option 3.
+2. **Export and import.** `export` writes JSONL, `import` merges it. Import is idempotent: importing the same file twice changes nothing. Embeddings are not exported; the destination recomputes them with its own model. Good for hand-offs, backups, and sharing a catalogue with a teammate.
+3. **Serve it.** Run `npx -y learned-experience --http` on one machine (or a small VPS) and point the other hosts at the URL. One catalogue, many agents, no sync at all. Put it behind your own auth before exposing it beyond localhost.
+
+On a single machine, several agents can share the database at once. Each server picks up the others' writes.
 
 ## Configuration
 
