@@ -15,8 +15,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
 
-export type HostId = "claude-code" | "codex" | "gemini" | "cursor" | "windsurf" | "claude-desktop";
-export const ALL_HOSTS: HostId[] = ["claude-code", "codex", "gemini", "cursor", "windsurf", "claude-desktop"];
+export type HostId = "claude-code" | "codex" | "gemini" | "openclaw" | "cursor" | "windsurf" | "claude-desktop";
+export const ALL_HOSTS: HostId[] = ["claude-code", "codex", "gemini", "openclaw", "cursor", "windsurf", "claude-desktop"];
 
 export interface Launch {
   command: string;
@@ -314,6 +314,56 @@ export function installHosts(opts: InstallOptions): HostReport[] {
         r.changes.push(...changes.map((c) => `${c} in ${settings}`));
       }
       if (touched) w.writeJson(settings, data);
+    }
+    reports.push(r);
+  }
+
+  // ---- OpenClaw: MCP under mcp.servers in ~/.openclaw/openclaw.json (JSON5; edited only when it is plain JSON)
+  if (wanted.has("openclaw")) {
+    const dir = join(home, ".openclaw");
+    const file = join(dir, "openclaw.json");
+    const r: HostReport = { host: "openclaw", name: "OpenClaw", detected: existsSync(dir) || hasCli("openclaw"), changes: [], manual: [] };
+    if (r.detected) {
+      let data: Record<string, unknown> | null = null;
+      try {
+        data = readJson(file);
+      } catch {
+        data = null; // JSON5 with comments or trailing commas: do not risk rewriting it
+      }
+      const desired = { command: launch.command, args: launch.args, transport: "stdio", enabled: true };
+      if (data) {
+        const mcp = (data.mcp && typeof data.mcp === "object" ? data.mcp : {}) as Record<string, unknown>;
+        const servers = (mcp.servers && typeof mcp.servers === "object" ? mcp.servers : {}) as Record<string, unknown>;
+        if (uninstall) {
+          if (SERVER in servers) {
+            delete servers[SERVER];
+            mcp.servers = servers;
+            data.mcp = mcp;
+            w.writeJson(file, data);
+            r.changes.push(`removed MCP server from ${file}`);
+          }
+        } else if (JSON.stringify(servers[SERVER]) !== JSON.stringify(desired)) {
+          r.changes.push(`${SERVER in servers ? "updated" : "added"} MCP server in ${file}`);
+          servers[SERVER] = desired;
+          mcp.servers = servers;
+          data.mcp = mcp;
+          w.writeJson(file, data);
+        }
+      } else if (hasCli("openclaw")) {
+        if (!uninstall) {
+          if (!dryRun) {
+            const res = exec("openclaw", ["mcp", "add", SERVER, "--command", launch.command, ...launch.args.flatMap((a) => ["--arg", a]), "--no-probe"]);
+            if (!res.ok) throw new Error(`openclaw mcp add failed: ${res.output}`);
+          }
+          r.changes.push("registered MCP server via `openclaw mcp add`");
+        } else {
+          if (!dryRun) exec("openclaw", ["mcp", "unset", SERVER]);
+          r.changes.push("removed MCP server via `openclaw mcp unset`");
+        }
+      } else {
+        r.manual.push(`${file} uses JSON5 syntax; add the server with: openclaw mcp add ${SERVER} --command ${launch.command} ${launch.args.map((a) => `--arg ${a}`).join(" ")}`);
+      }
+      if (!uninstall) r.manual.push("restart the OpenClaw gateway; hooks are not available, the model follows the protocol from MCP instructions");
     }
     reports.push(r);
   }

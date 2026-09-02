@@ -9,6 +9,7 @@ function fakeHome(): string {
   mkdirSync(join(home, ".claude"), { recursive: true });
   mkdirSync(join(home, ".codex"), { recursive: true });
   mkdirSync(join(home, ".gemini"), { recursive: true });
+  mkdirSync(join(home, ".openclaw"), { recursive: true });
   mkdirSync(join(home, ".cursor"), { recursive: true });
   mkdirSync(join(home, "Library", "Application Support", "Claude"), { recursive: true });
   return home;
@@ -25,6 +26,7 @@ describe("installHosts", () => {
     writeFileSync(join(home, ".codex", "hooks.json"), JSON.stringify({ description: "mine", hooks: { SessionStart: [{ matcher: "startup", hooks: [{ type: "command", command: "start.sh" }] }] } }));
     writeFileSync(join(home, ".codex", "config.toml"), 'model = "gpt-5"\n\n[mcp_servers.other]\ncommand = "x"\n');
     writeFileSync(join(home, ".gemini", "settings.json"), JSON.stringify({ theme: "dark", mcpServers: { other: { command: "x" } } }));
+    writeFileSync(join(home, ".openclaw", "openclaw.json"), JSON.stringify({ agents: { defaults: {} }, mcp: { servers: { other: { command: "x", transport: "stdio" } } } }));
 
     const opts = { home, platform: "darwin" as const, env: {}, hasCli: () => false, exec: () => ({ ok: false, output: "" }) };
     const first = installHosts(opts);
@@ -32,6 +34,7 @@ describe("installHosts", () => {
       ["claude-code", true],
       ["codex", true],
       ["gemini", true],
+      ["openclaw", true],
       ["cursor", true],
       ["windsurf", false],
       ["claude-desktop", true],
@@ -65,6 +68,13 @@ describe("installHosts", () => {
     expect(gemini.mcpServers["learned-experience"]).toEqual({ command: "npx", args: ["-y", "learned-experience"] });
     expect(gemini.hooks.AfterTool[0].hooks[0]).toEqual({ type: "command", command: "npx -y learned-experience hook", timeout: 30000, name: "learned-experience" });
     expect(gemini.hooks.BeforeAgent[0].hooks[0].timeout).toBe(20000);
+
+    // OpenClaw: mcp.servers entry with transport and enabled, other servers and sections preserved.
+    const openclaw = json(join(home, ".openclaw", "openclaw.json"));
+    expect(openclaw.agents).toEqual({ defaults: {} });
+    expect(openclaw.mcp.servers.other).toEqual({ command: "x", transport: "stdio" });
+    expect(openclaw.mcp.servers["learned-experience"]).toEqual({ command: "npx", args: ["-y", "learned-experience"], transport: "stdio", enabled: true });
+    expect(byHost(first, "openclaw").manual.some((m) => /gateway/.test(m))).toBe(true);
 
     // Cursor and Claude Desktop: MCP only.
     expect(json(join(home, ".cursor", "mcp.json")).mcpServers["learned-experience"].command).toBe("npx");
@@ -117,6 +127,19 @@ describe("installHosts", () => {
     expect(json(join(home, ".cursor", "mcp.json")).mcpServers).toEqual({});
     expect(json(join(home, ".claude", "settings.json")).hooks).toBeUndefined();
     expect(byHost(reports, "gemini").changes.length).toBeGreaterThan(0);
+  });
+
+  it("leaves a JSON5 OpenClaw config alone and falls back to the CLI or a manual step", () => {
+    const home = fakeHome();
+    writeFileSync(join(home, ".openclaw", "openclaw.json"), "// comment\n{ mcp: { servers: {} }, }\n");
+    const noCli = installHosts({ home, hosts: ["openclaw"], hasCli: () => false, exec: () => ({ ok: false, output: "" }) });
+    expect(readFileSync(join(home, ".openclaw", "openclaw.json"), "utf8")).toContain("// comment");
+    expect(byHost(noCli, "openclaw").changes).toEqual([]);
+    expect(byHost(noCli, "openclaw").manual[0]).toMatch(/openclaw mcp add learned-experience --command npx --arg -y --arg learned-experience/);
+    const calls: string[] = [];
+    const withCli = installHosts({ home, hosts: ["openclaw"], hasCli: () => true, exec: (c, a) => (calls.push([c, ...a].join(" ")), { ok: true, output: "" }) });
+    expect(calls).toEqual(["openclaw mcp add learned-experience --command npx --arg -y --arg learned-experience --no-probe"]);
+    expect(byHost(withCli, "openclaw").changes[0]).toMatch(/openclaw mcp add/);
   });
 
   it("supports a local launch command with spaces quoted in hook commands", () => {

@@ -1,0 +1,20 @@
+{
+  "name": "learned-experience",
+  "interface": {
+    "displayName": "Learned Experience"
+  },
+  "plugins": [
+    {
+      "name": "learned-experience",
+      "source": {
+        "source": "local",
+        "path": "./plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

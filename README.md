@@ -23,20 +23,30 @@ That detects the agents on your machine and configures each one: the MCP server 
 | Host | What `install` does | What you still do |
 |---|---|---|
 | Claude Code | Registers the server with `claude mcp add`, adds three hooks to `~/.claude/settings.json`. Skipped if the plugin below is installed. | Restart Claude Code |
-| Codex CLI | Registers the server with `codex mcp add`, adds three hooks to `~/.codex/hooks.json` | Run `/hooks` once in Codex to trust them |
+| Codex CLI and the Codex desktop app | Registers the server with `codex mcp add`, adds three hooks to `~/.codex/hooks.json`. The desktop app (inside the ChatGPT app) reads the same `~/.codex` configuration. | Run `/hooks` once in Codex to trust them |
 | Gemini CLI | Adds the server and two hooks to `~/.gemini/settings.json` | Nothing |
-| Cursor | Adds the server to `~/.cursor/mcp.json` | Add the two-line rule below (no hooks) |
-| Windsurf | Adds the server to `~/.codeium/windsurf/mcp_config.json` | Add the two-line rule below (no hooks) |
+| OpenClaw | Adds the server under `mcp.servers` in `~/.openclaw/openclaw.json` (or via `openclaw mcp add` when the file uses JSON5 syntax) | Restart the gateway. OpenClaw hooks are in-process plugins, not shell commands, so the model follows the protocol from MCP instructions. |
+| Cursor | Adds the server to `~/.cursor/mcp.json` | No hooks exist, so paste the reminder from [Hosts without hooks](#hosts-without-hooks) into your Cursor rules |
+| Windsurf | Adds the server to `~/.codeium/windsurf/mcp_config.json` | Same: paste the reminder from [Hosts without hooks](#hosts-without-hooks) into your global rules |
 | Claude Desktop | Adds the server to `claude_desktop_config.json` | Restart Claude Desktop |
 
 Pick hosts explicitly with `install codex gemini`, remove everything with `uninstall`, and use `--local` when running from a clone so hosts launch your build instead of the npm package.
 
-**Claude Code plugin** (alternative to the installer for Claude Code; same result, managed by Claude Code's plugin system):
+**Plugins** (alternative to the installer; same result, managed by the host's plugin system, updated when a new version is published):
 
 ```bash
+# Claude Code
 claude plugin marketplace add fitz2882/learned-experience
 claude plugin install learned-experience@learned-experience
+
+# Codex CLI and desktop app
+codex plugin marketplace add fitz2882/learned-experience
+codex plugin add learned-experience
 ```
+
+Both plugin systems check the marketplace for new versions in the background and pick up a release when its version number changes. To force it: `claude plugin update learned-experience` or `codex plugin marketplace upgrade`.
+
+**One catalogue for all of them.** Every host launches the same server, and the server reads the same database, so a lesson recorded in Codex is recalled in Claude Code, Gemini, Cursor, or OpenClaw, and vice versa.
 
 **Any other MCP host**, by hand:
 
@@ -55,7 +65,7 @@ claude plugin install learned-experience@learned-experience
 
 The MCP server, its eight tools, the record format, the search, and the database are the same on every host and with every model. Nothing in them knows which agent is calling. That is the part that makes the catalogue portable across providers.
 
-Hooks are not part of MCP. Each host decides whether it has hooks, which events exist, and what the payloads look like. Claude Code has a dedicated tool-failure event. Codex and Gemini CLI only have a general after-tool event, so the hook checks the response for signs of failure itself. Cursor, Windsurf, and Claude Desktop have no hooks at all. The single `learned-experience hook` command understands every dialect it has been taught (Claude Code, Codex, Gemini CLI), and hosts without hooks fall back to the protocol the server sends as MCP instructions, which every host injects into the model's context.
+Hooks are not part of MCP. Each host decides whether it has hooks, which events exist, and what the payloads look like. Claude Code has a dedicated tool-failure event. Codex and Gemini CLI only have a general after-tool event, so the hook checks the response for signs of failure itself. OpenClaw's hooks are in-process TypeScript plugins rather than shell commands. Cursor, Windsurf, and Claude Desktop have no hooks at all. The single `learned-experience hook` command understands every dialect it has been taught (Claude Code, Codex, Gemini CLI), and hosts without hooks fall back to the protocol the server sends as MCP instructions, which every host injects into the model's context.
 
 ## How it works
 
@@ -116,7 +126,9 @@ Failures caused by you (interrupts, permission denials) and failures of learned-
 
 Codex uses the same shape in `~/.codex/hooks.json` with `PostToolUse` (see [examples/codex-hooks.json](examples/codex-hooks.json)). Gemini CLI uses `hooks` inside `~/.gemini/settings.json` with `AfterTool` and `BeforeAgent`, timeouts in milliseconds, and a `name` on each hook.
 
-For hosts without hooks, the server sends its protocol as MCP instructions, which most hosts inject into the model's context. A two-line reminder in `CLAUDE.md`, `AGENTS.md`, or `.cursorrules` helps:
+### Hosts without hooks
+
+Cursor, Windsurf, Claude Desktop, and OpenClaw cannot run these shell hooks, so there the model has to remember to use the catalogue. The server sends its protocol as MCP instructions, which these hosts inject into the model's context, and a short standing reminder in the host's rules makes it reliable. Paste this into Cursor's rules, Windsurf's global rules, `CLAUDE.md`, or `AGENTS.md`:
 
 ```
 Before investigating any error or failing command, call the learned-experience `recall` tool with the exact error text in `signals`.

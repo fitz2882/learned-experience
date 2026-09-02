@@ -10,7 +10,7 @@ import type { Catalogue } from "./catalogue.js";
 import { ExperienceInput, Kind, Outcome, Attempt, Source } from "./schema.js";
 
 export const SERVER_NAME = "learned-experience";
-export const SERVER_VERSION = "0.3.0";
+export const SERVER_VERSION = "0.3.1";
 
 export const PROTOCOL = `learned-experience: a persistent catalogue of problems this user's agents have solved before. It is shared across every model and tool the user works with. Use it so nothing has to be learned twice.
 
