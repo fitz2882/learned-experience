@@ -1,5 +1,5 @@
 {
-  "description": "When a tool call fails, look the failure up in the learned-experience catalogue and inject any past fix into context.",
+  "description": "Recall past experience when a tool call fails or a request arrives, and ask for a record at the end of an eventful turn.",
   "hooks": {
     "PostToolUseFailure": [
       {
@@ -8,6 +8,28 @@
             "type": "command",
             "command": "npx -y learned-experience hook",
             "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y learned-experience hook",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y learned-experience hook",
+            "timeout": 20
           }
         ]
       }

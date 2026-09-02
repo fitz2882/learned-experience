@@ -104,15 +104,21 @@ problem ──▶ recall ──▶ hit? ──yes──▶ apply fix ──▶ r
 
 MCP cannot intercept a model's reasoning, so on most hosts the "check memory when you hit a problem" trigger is prompt-driven. The server ships its protocol as `instructions` (every host injects those into the model's context), as the `learned-experience://protocol` resource, and as the `solve` prompt. Hosts with rule files (CLAUDE.md, .cursorrules, AGENTS.md) get a two-line snippet in the README.
 
-In Claude Code the trigger is mechanical. A `PostToolUseFailure` hook runs `learned-experience hook`, which:
+In Claude Code the trigger is mechanical. One command, `learned-experience hook`, is registered for three events and dispatches on the event name:
+
+**PostToolUseFailure** (a tool call failed):
 
 1. reads the failure payload (`tool_name`, `tool_input`, `error`, `tool_response`);
 2. ignores failures the user caused (interrupts, permission denials) and failures of learned-experience's own tools, so it cannot loop;
 3. extracts up to four error-like lines as `signals`, tags the tool and the first word of a Bash command as `context`, and builds a generic `problem` line;
 4. runs `recall` in-process against the same database the MCP server uses;
-5. writes `hookSpecificOutput.additionalContext` with the hits (id, problem, fix, avoid, cause, confidence) and the instruction to `reinforce`, or a one-line nudge to `record` when nothing matches.
+5. writes `hookSpecificOutput.additionalContext` with the hits and the instruction to `reinforce`, or a one-line nudge to `record` when nothing matches.
 
-Everything the hook does before the lookup is deterministic string processing. The hook never blocks and never fails loudly: any error is logged to stderr and the session continues.
+**UserPromptSubmit** (the user sent a request): the request becomes the `problem`, any error-like lines in it become `signals`, and recall runs with a higher score floor (0.5) because a request is a weaker signal than an error string. Hits are injected before the model starts; a miss is silent, since most requests have no history. Prompts under 20 characters and slash commands are skipped.
+
+**Stop** (the turn is ending): the hook reads the transcript, isolates the last turn (from the last human message), and counts tool calls, failed tool results, and calls to learned-experience's own `record`, `reinforce`, and `recall`. If nothing was recorded and the turn was eventful (at least one failure across three or more calls, or fifteen or more calls), it returns `decision: "block"` with a reason asking the model to `record` once, or `reinforce` if it applied a recalled fix, or stop if nothing is worth keeping. Claude Code sets `stop_hook_active` on the retry, and the hook returns nothing then, so it asks at most once per turn.
+
+Everything the hooks do before the lookup is deterministic string processing. They never fail loudly: any error is logged to stderr and the session continues.
 
 The plugin (`plugin/`) packages the MCP server and the hook so both install with one command; the repository root carries a `marketplace.json` so `claude plugin marketplace add fitz2882/learned-experience` works.
 
@@ -125,5 +131,5 @@ The plugin (`plugin/`) packages the MCP server and the hook so both install with
 ## Future work
 
 - Optional secondary embedding model for reranking.
-- Failure hooks for other hosts as they gain hook support.
+- Hooks for other hosts as they gain hook support.
 - A WikiSkill-style compiler that turns `rule` records into SKILL.md files.

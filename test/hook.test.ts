@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Catalogue } from "../src/catalogue.js";
-import { formatContext, queryFromFailure, responseText, runHook } from "../src/hook.js";
+import { formatContext, hookOptionsFromEnv, queryFromFailure, queryFromPrompt, responseText, runHook, stopDecision, summarizeLastTurn } from "../src/hook.js";
 import { Store } from "../src/store.js";
 import { FakeEmbedder } from "./fake-embedder.js";
 
@@ -86,6 +86,11 @@ describe("runHook", () => {
     expect(await runHook({ tool_name: "mcp__learned-experience__record", error: "x failed" }, cat)).toBeNull();
   });
 
+  it("ignores unknown events", async () => {
+    const cat = new Catalogue(new Store(":memory:"), null);
+    expect(await runHook({ hook_event_name: "SessionStart" }, cat)).toBeNull();
+  });
+
   it("formatContext is compact and deterministic", () => {
     const text = formatContext(
       [
@@ -110,5 +115,94 @@ describe("runHook", () => {
         "1. [x_1] P | fix: F | avoid: A1; A2 | (confidence 0.25, score 0.61, unresolved last time)\n" +
         "Apply the best-fitting fix first, then call learned-experience `reinforce` with its id and whether it worked. If none fit and you solve it another way, call `record` once."
     );
+  });
+});
+
+describe("UserPromptSubmit hook", () => {
+  it("skips short prompts and slash commands", () => {
+    expect(queryFromPrompt("yes")).toBeNull();
+    expect(queryFromPrompt("/commit all the things please")).toBeNull();
+    expect(queryFromPrompt("   ")).toBeNull();
+  });
+
+  it("uses the request as the problem and error-like lines as signals", () => {
+    const q = queryFromPrompt("Fix the deploy, it keeps failing:\nError: EACCES: permission denied, mkdir '/usr/local/lib/node_modules/x'\nthanks")!;
+    expect(q.problem.startsWith("Fix the deploy")).toBe(true);
+    expect(q.signals).toContain("Error: EACCES: permission denied, mkdir '/usr/local/lib/node_modules/x'");
+    expect(q.signals).not.toContain("thanks");
+    expect(q.context).toEqual([]);
+  });
+
+  it("injects relevant experience for a request, and stays silent on a miss", async () => {
+    const cat = new Catalogue(new Store(":memory:"), new FakeEmbedder());
+    await cat.record({
+      problem: "Vite dev server does not hot-reload inside Docker on macOS",
+      signals: [],
+      context: ["vite", "docker", "macos"],
+      fix: "Set server.watch.usePolling = true in vite.config.ts",
+      avoid: [],
+      outcome: "success",
+      kind: "episode",
+      attempts: [],
+    });
+    const hit = (await runHook({ hook_event_name: "UserPromptSubmit", prompt: "The vite dev server in my docker container is not hot reloading on my mac, can you fix it" }, cat))!;
+    const ctx = hit.hookSpecificOutput as { hookEventName: string; additionalContext: string };
+    expect(ctx.hookEventName).toBe("UserPromptSubmit");
+    expect(ctx.additionalContext).toContain("looks relevant to this request");
+    expect(ctx.additionalContext).toContain("usePolling");
+    expect(await runHook({ hook_event_name: "UserPromptSubmit", prompt: "Write a haiku about the ocean and the moon for me" }, cat)).toBeNull();
+  });
+});
+
+describe("Stop hook", () => {
+  const line = (o: unknown) => JSON.stringify(o);
+  const user = (text: string) => line({ type: "user", message: { role: "user", content: text } });
+  const toolUse = (name: string) => line({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", name, input: {} }] } });
+  const result = (isError: boolean) => line({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t", is_error: isError, content: "x" }] } });
+
+  it("summarises only the last turn", () => {
+    const jsonl = [
+      user("first request"),
+      toolUse("Bash"),
+      result(true),
+      user("second request"),
+      toolUse("Bash"),
+      result(true),
+      toolUse("Bash"),
+      result(false),
+      toolUse("mcp__plugin_learned-experience_learned-experience__recall"),
+      result(false),
+      "not json at all",
+    ].join("\n");
+    expect(summarizeLastTurn(jsonl)).toEqual({ toolCalls: 3, failures: 1, recorded: false, recalled: true });
+  });
+
+  it("asks once for a record after an eventful turn, and never loops", async () => {
+    const jsonl = [user("fix the build"), toolUse("Bash"), result(true), toolUse("Edit"), result(false), toolUse("Bash"), result(false)].join("\n");
+    const cat = new Catalogue(new Store(":memory:"), null);
+    const readTranscript = async () => jsonl;
+    const out = (await runHook({ hook_event_name: "Stop", transcript_path: "/x", stop_hook_active: false }, cat, { readTranscript }))!;
+    expect(out.decision).toBe("block");
+    expect(out.reason).toMatch(/1 failed tool call across 3 calls/);
+    expect(out.reason).toContain("`record`");
+    expect(await runHook({ hook_event_name: "Stop", transcript_path: "/x", stop_hook_active: true }, cat, { readTranscript })).toBeNull();
+    expect(await runHook({ hook_event_name: "Stop", transcript_path: "/x" }, cat, { readTranscript, stopNudge: false })).toBeNull();
+  });
+
+  it("stays quiet for uneventful turns and when the model already recorded", () => {
+    expect(stopDecision({ toolCalls: 2, failures: 1, recorded: false, recalled: false }, {})).toBeNull();
+    expect(stopDecision({ toolCalls: 5, failures: 0, recorded: false, recalled: false }, {})).toBeNull();
+    expect(stopDecision({ toolCalls: 5, failures: 2, recorded: true, recalled: true }, {})).toBeNull();
+    expect(stopDecision({ toolCalls: 15, failures: 0, recorded: false, recalled: false }, {})?.reason).toMatch(/15 tool calls/);
+    expect(stopDecision({ toolCalls: 4, failures: 1, recorded: false, recalled: true }, {})?.reason).toContain("`reinforce`");
+  });
+
+  it("reads thresholds from the environment", () => {
+    expect(hookOptionsFromEnv({ LEARNED_EXPERIENCE_STOP_NUDGE: "0", LEARNED_EXPERIENCE_STOP_MIN_CALLS: "7", LEARNED_EXPERIENCE_HOOK_QUIET: "1" })).toMatchObject({
+      stopNudge: false,
+      stopMinToolCalls: 7,
+      quietOnMiss: true,
+    });
+    expect(hookOptionsFromEnv({})).toMatchObject({ stopNudge: true, quietOnMiss: false });
   });
 });

@@ -2,39 +2,47 @@
  * Main entry (loaded by index.ts after the warning filter is installed).
  *   learned-experience                 stdio transport (what every MCP host speaks)
  *   learned-experience --http [--port 3111] [--host 127.0.0.1]   streamable HTTP transport
- *   learned-experience hook            Claude Code PostToolUseFailure hook: payload on stdin, context JSON on stdout
+ *   learned-experience hook            Claude Code hook (PostToolUseFailure, UserPromptSubmit, Stop): payload on stdin, JSON on stdout
+ *   learned-experience recall <text>   query the catalogue from a shell; prints JSON hits
+ *   learned-experience stats           catalogue statistics as JSON
  *   learned-experience export <file>   dump the catalogue as JSONL without an agent
  *   learned-experience import <file>   merge a JSONL file into the catalogue
  *
- * Environment: see config.ts. LEARNED_EXPERIENCE_HOOK_QUIET=1 silences the hook when nothing matches.
+ * Environment: see config.ts and hookOptionsFromEnv in hook.ts.
  */
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { configFromEnv, openCatalogue } from "./config.js";
-import { readStdin, runHook } from "./hook.js";
+import { hookOptionsFromEnv, readStdin, runHook } from "./hook.js";
 import { buildServer } from "./server.js";
 
 function log(msg: string): void {
   process.stderr.write(`[learned-experience] ${msg}\n`);
 }
 
-type Command = "export" | "import" | "hook";
+type Command = "export" | "import" | "hook" | "recall" | "stats";
 
 function parseArgs(argv: string[]) {
-  const args = { http: false, port: 3111, host: "127.0.0.1", command: null as null | Command, file: "" };
+  const args = { http: false, port: 3111, host: "127.0.0.1", command: null as null | Command, file: "", text: "" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--http") args.http = true;
     else if (a === "--port") args.port = Number(argv[++i]);
     else if (a === "--host") args.host = argv[++i];
-    else if (a === "hook") args.command = a;
-    else if (a === "export" || a === "import") {
+    else if (a === "hook" || a === "stats") args.command = a;
+    else if (a === "recall") {
+      args.command = a;
+      args.text = argv.slice(i + 1).join(" ");
+      break;
+    } else if (a === "export" || a === "import") {
       args.command = a;
       args.file = argv[++i] ?? "";
     } else if (a === "--help" || a === "-h") {
-      process.stdout.write("usage: learned-experience [--http [--port N] [--host H]] | hook | export <file> | import <file>\n");
+      process.stdout.write(
+        "usage: learned-experience [--http [--port N] [--host H]] | hook | recall <text> | stats | export <file> | import <file>\n"
+      );
       process.exit(0);
     }
   }
@@ -50,7 +58,7 @@ async function main(): Promise<void> {
     try {
       const payload = JSON.parse(await readStdin()) as Parameters<typeof runHook>[0];
       const { store, catalogue } = await openCatalogue(cfg);
-      const out = await runHook(payload, catalogue, { quietOnMiss: process.env.LEARNED_EXPERIENCE_HOOK_QUIET === "1" });
+      const out = await runHook(payload, catalogue, hookOptionsFromEnv(process.env));
       store.close();
       if (out) process.stdout.write(JSON.stringify(out));
     } catch (e) {
@@ -60,6 +68,20 @@ async function main(): Promise<void> {
   }
 
   const { store, catalogue, embedderId } = await openCatalogue(cfg);
+
+  if (args.command === "recall") {
+    if (!args.text.trim()) throw new Error("recall needs some text");
+    const lines = args.text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const res = await catalogue.recall({ problem: lines[0].slice(0, 240), signals: lines.slice(1, 9) });
+    process.stdout.write(JSON.stringify(res, null, 2) + "\n");
+    store.close();
+    return;
+  }
+  if (args.command === "stats") {
+    process.stdout.write(JSON.stringify(await catalogue.stats(), null, 2) + "\n");
+    store.close();
+    return;
+  }
 
   if (args.command === "export") {
     if (!args.file) throw new Error("export needs a file path");
