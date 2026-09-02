@@ -57,6 +57,7 @@ export function clean(text: string, maxLen: number): string {
 export function normalizeSignal(text: string): string {
   return portablePaths(redact(text))
     .toLowerCase()
+    .replace(/^(\s*(npm (err!|warn)|\[[^\]]{1,20}\]|#\d+|\d+:\d+(:\d+)?)\s*)+/, "") // logger prefixes: "npm ERR!", "[vite]", "12:04:33"
     .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/g, "#") // uuid
     .replace(/\b0x[0-9a-f]+\b/g, "#") // hex address
     .replace(/\b[0-9a-f]{7,}\b/g, "#") // hashes / sha

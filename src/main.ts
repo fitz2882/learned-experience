@@ -1,44 +1,40 @@
 /**
  * Main entry (loaded by index.ts after the warning filter is installed).
- *   experience-mcp                 stdio transport (what every MCP host speaks)
- *   experience-mcp --http [--port 3111] [--host 127.0.0.1]   streamable HTTP transport
- *   experience-mcp export <file>   dump the catalogue as JSONL without an agent
- *   experience-mcp import <file>   merge a JSONL file into the catalogue
+ *   been-there                 stdio transport (what every MCP host speaks)
+ *   been-there --http [--port 3111] [--host 127.0.0.1]   streamable HTTP transport
+ *   been-there hook            Claude Code PostToolUseFailure hook: payload on stdin, context JSON on stdout
+ *   been-there export <file>   dump the catalogue as JSONL without an agent
+ *   been-there import <file>   merge a JSONL file into the catalogue
  *
- * Environment:
- *   EXPERIENCE_HOME     data directory (default ~/.experience-mcp)
- *   EXPERIENCE_DB       explicit database path (overrides EXPERIENCE_HOME/experiences.db)
- *   EXPERIENCE_EMBEDDINGS, EXPERIENCE_EMBED_MODEL, EXPERIENCE_EMBED_BASE_URL, EXPERIENCE_EMBED_API_KEY
+ * Environment: see config.ts. BEEN_THERE_HOOK_QUIET=1 silences the hook when nothing matches.
  */
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { Catalogue } from "./catalogue.js";
-import { createEmbedder, embedderConfigFromEnv } from "./embed/index.js";
+import { configFromEnv, openCatalogue } from "./config.js";
+import { readStdin, runHook } from "./hook.js";
 import { buildServer } from "./server.js";
-import { Store } from "./store.js";
 
 function log(msg: string): void {
-  process.stderr.write(`[experience-mcp] ${msg}\n`);
+  process.stderr.write(`[been-there] ${msg}\n`);
 }
 
+type Command = "export" | "import" | "hook";
+
 function parseArgs(argv: string[]) {
-  const args = { http: false, port: 3111, host: "127.0.0.1", command: null as null | "export" | "import", file: "" };
+  const args = { http: false, port: 3111, host: "127.0.0.1", command: null as null | Command, file: "" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--http") args.http = true;
     else if (a === "--port") args.port = Number(argv[++i]);
     else if (a === "--host") args.host = argv[++i];
+    else if (a === "hook") args.command = a;
     else if (a === "export" || a === "import") {
       args.command = a;
       args.file = argv[++i] ?? "";
     } else if (a === "--help" || a === "-h") {
-      process.stdout.write(
-        "usage: experience-mcp [--http [--port N] [--host H]] | export <file> | import <file>\n"
-      );
+      process.stdout.write("usage: been-there [--http [--port N] [--host H]] | hook | export <file> | import <file>\n");
       process.exit(0);
     }
   }
@@ -47,13 +43,23 @@ function parseArgs(argv: string[]) {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const home = process.env.EXPERIENCE_HOME ?? join(homedir(), ".experience-mcp");
-  const dbPath = process.env.EXPERIENCE_DB ?? join(home, "experiences.db");
-  const transferDir = process.env.EXPERIENCE_TRANSFER_DIR ?? join(home, "transfers");
+  const cfg = configFromEnv();
 
-  const store = new Store(dbPath);
-  const embedder = await createEmbedder(embedderConfigFromEnv(process.env, join(home, "models")));
-  const catalogue = new Catalogue(store, embedder);
+  if (args.command === "hook") {
+    // Never break the user's session: any failure here is logged and swallowed.
+    try {
+      const payload = JSON.parse(await readStdin()) as Parameters<typeof runHook>[0];
+      const { store, catalogue } = await openCatalogue(cfg);
+      const out = await runHook(payload, catalogue, { quietOnMiss: process.env.BEEN_THERE_HOOK_QUIET === "1" });
+      store.close();
+      if (out) process.stdout.write(JSON.stringify(out));
+    } catch (e) {
+      log(`hook skipped: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    return;
+  }
+
+  const { store, catalogue, embedderId } = await openCatalogue(cfg);
 
   if (args.command === "export") {
     if (!args.file) throw new Error("export needs a file path");
@@ -73,25 +79,20 @@ async function main(): Promise<void> {
 
   // Warm the indexes (and the local model) in the background so the first recall is fast.
   catalogue.init().then(
-    () => log(`ready: ${store.count()} records, embeddings=${embedder?.id ?? "none"}, db=${dbPath}`),
+    () => log(`ready: ${store.count()} records, embeddings=${embedderId ?? "none"}, db=${cfg.dbPath}`),
     (e) => log(`init failed: ${e instanceof Error ? e.message : String(e)}`)
   );
 
+  const serverOptions = { transferDir: cfg.transferDir };
+
   if (args.http) {
-    const httpServer = createHttpServer((req, res) => {
-      handleHttp(req, res).catch((e) => {
-        log(`http request failed: ${e instanceof Error ? e.message : String(e)}`);
-        if (!res.headersSent) res.writeHead(e instanceof SyntaxError ? 400 : 500, { "content-type": "application/json" });
-        if (!res.writableEnded) res.end(JSON.stringify({ error: e instanceof SyntaxError ? "invalid JSON body" : "internal error" }));
-      });
-    });
     const handleHttp = async (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => {
       if (req.url !== "/mcp") {
         res.writeHead(404).end();
         return;
       }
       // Stateless: one server + transport per request, sharing the same catalogue.
-      const server = buildServer(catalogue, { transferDir });
+      const server = buildServer(catalogue, serverOptions);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       res.on("close", () => {
         transport.close();
@@ -107,11 +108,18 @@ async function main(): Promise<void> {
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     };
+    const httpServer = createHttpServer((req, res) => {
+      handleHttp(req, res).catch((e) => {
+        log(`http request failed: ${e instanceof Error ? e.message : String(e)}`);
+        if (!res.headersSent) res.writeHead(e instanceof SyntaxError ? 400 : 500, { "content-type": "application/json" });
+        if (!res.writableEnded) res.end(JSON.stringify({ error: e instanceof SyntaxError ? "invalid JSON body" : "internal error" }));
+      });
+    });
     httpServer.listen(args.port, args.host, () => log(`http listening on http://${args.host}:${args.port}/mcp`));
     return;
   }
 
-  const server = buildServer(catalogue, { transferDir });
+  const server = buildServer(catalogue, serverOptions);
   await server.connect(new StdioServerTransport());
 }
 

@@ -1,17 +1,18 @@
 {
-  "name": "experience-mcp",
+  "name": "been-there",
   "version": "0.1.0",
-  "description": "Model-agnostic MCP server that gives any AI agent a persistent, self-improving catalogue of solved problems.",
+  "description": "Model-agnostic MCP server that gives any AI agent a persistent, self-improving catalogue of solved problems. Recall past fixes, record new ones, never learn the same thing twice.",
   "type": "module",
   "license": "MIT",
   "bin": {
-    "experience-mcp": "dist/index.js"
+    "been-there": "dist/index.js"
   },
   "main": "dist/index.js",
   "files": [
     "dist",
     "README.md",
-    "DESIGN.md"
+    "DESIGN.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=22.13"
@@ -22,7 +23,7 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "npm run build",
-    "smoke": "npm run build && node scripts/smoke.mjs dist/index.js .experience"
+    "smoke": "npm run build && node scripts/smoke.mjs dist/index.js .been-there"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
@@ -34,5 +35,25 @@
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
     "vitest": "^4.1.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fitz2882/been-there.git"
+  },
+  "homepage": "https://github.com/fitz2882/been-there#readme",
+  "bugs": {
+    "url": "https://github.com/fitz2882/been-there/issues"
+  },
+  "author": "Dave Fitzsimmons",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "memory",
+    "experience",
+    "self-improving",
+    "agent",
+    "claude",
+    "hooks",
+    "embeddings"
+  ]
 }

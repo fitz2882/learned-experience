@@ -34,6 +34,12 @@ describe("normalizeSignal", () => {
     expect(a).toBe(b);
     expect(a).toBe("error connect econnrefused # # at # pid #");
   });
+  it("strips logger prefixes so the same error matches from any tool", () => {
+    const bare = normalizeSignal("Error: EACCES: permission denied, mkdir '/usr/local/lib/node_modules/typescript'");
+    expect(normalizeSignal("npm ERR! Error: EACCES: permission denied, mkdir '/usr/local/lib/node_modules/typescript'")).toBe(bare);
+    expect(normalizeSignal("[vite] Error: EACCES: permission denied, mkdir '/usr/local/lib/node_modules/typescript'")).toBe(bare);
+    expect(normalizeSignal("12:04:33 Error: EACCES: permission denied, mkdir '/usr/local/lib/node_modules/typescript'")).toBe(bare);
+  });
   it("treats hashes, uuids and timestamps as volatile", () => {
     const a = normalizeSignal("commit 3fa4c9b12 failed at 2026-09-01T10:00:00Z id 123e4567-e89b-12d3-a456-426614174000");
     expect(a).toBe("commit # failed at # id #");

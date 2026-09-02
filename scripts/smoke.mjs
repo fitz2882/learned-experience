@@ -4,7 +4,7 @@ const t0 = Date.now();
 const transport = new StdioClientTransport({
   command: "node",
   args: [process.argv[2]],
-  env: { ...process.env, EXPERIENCE_HOME: process.argv[3] },
+  env: { ...process.env, BEEN_THERE_HOME: process.argv[3] },
   stderr: "pipe",
 });
 transport.stderr?.on("data", (d) => process.stdout.write("  [server] " + d));

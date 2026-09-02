@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "been-there": {
+      "command": "npx",
+      "args": ["-y", "been-there"]
+    }
+  }
+}

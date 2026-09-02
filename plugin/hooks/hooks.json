@@ -1,0 +1,16 @@
+{
+  "description": "When a tool call fails, look the failure up in the been-there catalogue and inject any past fix into context.",
+  "hooks": {
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y been-there hook",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
