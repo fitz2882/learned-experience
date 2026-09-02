@@ -1,0 +1,38 @@
+{
+  "name": "experience-mcp",
+  "version": "0.1.0",
+  "description": "Model-agnostic MCP server that gives any AI agent a persistent, self-improving catalogue of solved problems.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "experience-mcp": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "DESIGN.md"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build",
+    "smoke": "npm run build && node scripts/smoke.mjs dist/index.js .experience"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.0"
+  }
+}
