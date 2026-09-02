@@ -2,7 +2,10 @@
   "$schema": "https://code.claude.com/schemas/marketplace.json",
   "name": "learned-experience",
   "description": "learned-experience: a self-improving experience catalogue for AI agents",
-  "owner": { "name": "Dave Fitzsimmons", "url": "https://github.com/fitz2882" },
+  "owner": {
+    "name": "fitz2882",
+    "url": "https://github.com/fitz2882"
+  },
   "plugins": [
     {
       "name": "learned-experience",

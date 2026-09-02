@@ -44,7 +44,10 @@
   "bugs": {
     "url": "https://github.com/fitz2882/learned-experience/issues"
   },
-  "author": "Dave Fitzsimmons",
+  "author": {
+    "name": "fitz2882",
+    "url": "https://github.com/fitz2882"
+  },
   "keywords": [
     "mcp",
     "model-context-protocol",

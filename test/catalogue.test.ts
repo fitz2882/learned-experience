@@ -75,7 +75,7 @@ describe("record + recall", () => {
     const { cat } = make();
     const r = await cat.record({
       ...pgDown,
-      signals: ["connect failed for postgres://admin:s3cretpass@localhost/db from /Users/dave/app"],
+      signals: ["connect failed for postgres://admin:s3cretpass@localhost/db from /Users/alice/app"],
       fix: "export DATABASE_URL=postgres://<CREDS>@localhost/db and set OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz123456",
     });
     const doc = (await cat.get(r.id))!;

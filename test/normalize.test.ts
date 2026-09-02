@@ -11,7 +11,7 @@ describe("redact", () => {
   });
   it("strips key=value secrets, emails, bearer tokens and URL creds", () => {
     expect(redact("password=hunter2hunter2")).toBe("password=<SECRET>");
-    expect(redact("mail dave@example.com now")).toBe("mail <EMAIL> now");
+    expect(redact("mail alice@example.com now")).toBe("mail <EMAIL> now");
     expect(redact("Authorization: Bearer abcdefghijklmnopqrstuvwxyz")).toContain("<SECRET>");
     expect(redact("postgres://user:pass@host/db")).toBe("postgres://<CREDS>@host/db");
   });
@@ -23,7 +23,7 @@ describe("redact", () => {
 
 describe("portablePaths", () => {
   it("replaces home dirs on all platforms", () => {
-    expect(portablePaths("/Users/dave/proj/x.ts /home/dave/y C:\\Users\\dave\\z")).toBe("~/proj/x.ts ~/y ~\\z");
+    expect(portablePaths("/Users/alice/proj/x.ts /home/alice/y C:\\Users\\alice\\z")).toBe("~/proj/x.ts ~/y ~\\z");
   });
 });
 

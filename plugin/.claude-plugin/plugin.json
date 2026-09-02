@@ -4,11 +4,21 @@
   "displayName": "Learned Experience",
   "version": "0.1.0",
   "description": "A self-improving catalogue of solved problems. Recalls past fixes automatically when a tool call fails, and lets the agent record what worked so nothing is learned twice.",
-  "author": { "name": "Dave Fitzsimmons", "url": "https://github.com/fitz2882" },
+  "author": {
+    "name": "fitz2882",
+    "url": "https://github.com/fitz2882"
+  },
   "homepage": "https://github.com/fitz2882/learned-experience",
   "repository": "https://github.com/fitz2882/learned-experience",
   "license": "MIT",
-  "keywords": ["memory", "experience", "self-improving", "mcp", "hooks", "recall"],
+  "keywords": [
+    "memory",
+    "experience",
+    "self-improving",
+    "mcp",
+    "hooks",
+    "recall"
+  ],
   "mcpServers": "./.mcp.json",
   "hooks": "./hooks/hooks.json"
 }
