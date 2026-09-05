@@ -100,7 +100,7 @@ MCP cannot see a model's reasoning, so without hooks the model has to remember t
 |---|---|---|---|---|
 | **A tool call fails** | `PostToolUseFailure` | `PostToolUse` | `AfterTool` | The error text becomes a query. Matching fixes are injected with the instruction to apply one and `reinforce`. On a miss, a one-line reminder to `record` once solved. Codex and Gemini have no failure event, so the hook runs after every tool call and acts only when the response carries a non-zero exit code, an error flag, or unmistakable failure text. |
 | **You send a request** | `UserPromptSubmit` | `UserPromptSubmit` | `BeforeAgent` | The request becomes a query. If past experience looks relevant it is injected before the model starts. Silent otherwise; skipped for short prompts and slash commands. |
-| **The turn ends** | `Stop` | `Stop` | not available | If the turn had failed tool calls (or was very long) and nothing was recorded, the model is asked once whether something is worth recording. Never twice in a turn, never after a `record` or `reinforce`. |
+| **The turn ends** | `Stop` | `Stop` | not available | Silent by default so the final answer is delivered without a housekeeping continuation. Explicitly setting `LEARNED_EXPERIENCE_STOP_NUDGE=1` enables the legacy blocking reminder after eventful turns; its loop guard still applies. |
 
 What the model sees after a failure:
 
@@ -125,6 +125,8 @@ Failures caused by you (interrupts, permission denials) and failures of learned-
 ```
 
 Codex uses the same shape in `~/.codex/hooks.json` with `PostToolUse` (see [examples/codex-hooks.json](examples/codex-hooks.json)). Gemini CLI uses `hooks` inside `~/.gemini/settings.json` with `AfterTool` and `BeforeAgent`, timeouts in milliseconds, and a `name` on each hook.
+
+Existing installations running an older npm version can disable the reminder immediately by changing only the Stop command to `LEARNED_EXPERIENCE_STOP_NUDGE=0 npx -y learned-experience hook` in their hook configuration (POSIX shells). Keep the failure and prompt hooks enabled; they provide recall and recording guidance during the work. No stored experiences need to change.
 
 ### Hosts without hooks
 
@@ -192,7 +194,7 @@ All optional.
 | `LEARNED_EXPERIENCE_EMBED_BASE_URL` | per provider | Any OpenAI-compatible endpoint, or the Ollama base URL |
 | `LEARNED_EXPERIENCE_EMBED_API_KEY` | `$OPENAI_API_KEY` | Key for remote providers |
 | `LEARNED_EXPERIENCE_HOOK_QUIET` | unset | `1`: no reminder after a failure that matches nothing |
-| `LEARNED_EXPERIENCE_STOP_NUDGE` | `1` | `0`: never ask for a record at the end of a turn |
+| `LEARNED_EXPERIENCE_STOP_NUDGE` | `0` | Only `1` opts in to a blocking end-of-turn reminder. Leave disabled in Codex: a continuation can replace the final answer. |
 | `LEARNED_EXPERIENCE_STOP_MIN_FAILURES` | `1` | Failed tool calls needed before the end-of-turn reminder |
 | `LEARNED_EXPERIENCE_STOP_MIN_CALLS` | `3` | Tool calls needed before the end-of-turn reminder |
 | `LEARNED_EXPERIENCE_STOP_LONG_TURN` | `15` | Tool calls after which the reminder fires even without failures |

@@ -177,15 +177,15 @@ describe("Stop hook", () => {
     expect(summarizeLastTurn(jsonl)).toEqual({ toolCalls: 3, failures: 1, recorded: false, recalled: true });
   });
 
-  it("asks once for a record after an eventful turn, and never loops", async () => {
+  it("asks once for a record only when explicitly enabled, and never loops", async () => {
     const jsonl = [user("fix the build"), toolUse("Bash"), result(true), toolUse("Edit"), result(false), toolUse("Bash"), result(false)].join("\n");
     const cat = new Catalogue(new Store(":memory:"), null);
     const readTranscript = async () => jsonl;
-    const out = (await runHook({ hook_event_name: "Stop", transcript_path: "/x", stop_hook_active: false }, cat, { readTranscript }))!;
+    const out = (await runHook({ hook_event_name: "Stop", transcript_path: "/x", stop_hook_active: false }, cat, { readTranscript, stopNudge: true }))!;
     expect(out.decision).toBe("block");
     expect(out.reason).toMatch(/1 failed tool call across 3 calls/);
     expect(out.reason).toContain("`record`");
-    expect(await runHook({ hook_event_name: "Stop", transcript_path: "/x", stop_hook_active: true }, cat, { readTranscript })).toBeNull();
+    expect(await runHook({ hook_event_name: "Stop", transcript_path: "/x", stop_hook_active: true }, cat, { readTranscript, stopNudge: true })).toBeNull();
     expect(await runHook({ hook_event_name: "Stop", transcript_path: "/x" }, cat, { readTranscript, stopNudge: false })).toBeNull();
   });
 
@@ -203,7 +203,35 @@ describe("Stop hook", () => {
       stopMinToolCalls: 7,
       quietOnMiss: true,
     });
-    expect(hookOptionsFromEnv({})).toMatchObject({ stopNudge: true, quietOnMiss: false });
+    expect(hookOptionsFromEnv({})).toMatchObject({ stopNudge: false, quietOnMiss: false });
+    expect(hookOptionsFromEnv({ LEARNED_EXPERIENCE_STOP_NUDGE: "1" }).stopNudge).toBe(true);
+    expect(hookOptionsFromEnv({ LEARNED_EXPERIENCE_STOP_NUDGE: "true" }).stopNudge).toBe(false);
+  });
+
+  it("does not read the transcript or block a completed answer by default", async () => {
+    const cat = new Catalogue(new Store(":memory:"), null);
+    const readTranscript = async () => { throw new Error("disabled Stop must not read transcripts"); };
+    const input = { hook_event_name: "Stop", transcript_path: "/completed-answer.jsonl" };
+    expect(await runHook(input, cat, { readTranscript })).toBeNull();
+    expect(await runHook(input, cat, { ...hookOptionsFromEnv({}), readTranscript })).toBeNull();
+  });
+
+  it("preserves a Codex final answer after the reported one-failure ten-call turn", async () => {
+    const jsonl = [
+      line({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Research API key services" }] } }),
+      ...Array.from({ length: 10 }, (_, i) => [
+        line({ type: "response_item", payload: { type: "custom_tool_call", name: "exec", input: "research" } }),
+        line({ type: "response_item", payload: { type: "custom_tool_call_output", output: JSON.stringify({ exit_code: i === 0 ? 1 : 0 }) } }),
+      ]).flat(),
+      line({ type: "response_item", payload: { type: "message", role: "assistant", channel: "final", content: [{ type: "output_text", text: "Here are the research results." }] } }),
+    ].join("\n");
+    expect(summarizeLastTurn(jsonl)).toMatchObject({ toolCalls: 10, failures: 1, recorded: false });
+    const cat = new Catalogue(new Store(":memory:"), null);
+    const input = { hook_event_name: "Stop", transcript_path: "/codex-rollout.jsonl" };
+    const readTranscript = async () => jsonl;
+    expect(await runHook(input, cat, { readTranscript })).toBeNull();
+    expect(await runHook(input, cat, { ...hookOptionsFromEnv({}), readTranscript })).toBeNull();
+    expect((await runHook(input, cat, { readTranscript, stopNudge: true }))?.decision).toBe("block");
   });
 });
 

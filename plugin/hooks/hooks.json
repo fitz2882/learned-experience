@@ -1,5 +1,5 @@
 {
-  "description": "Recall past experience when a tool call fails or a request arrives, and ask for a record at the end of an eventful turn.",
+  "description": "learned-experience: recall past fixes after failed tool calls and on new requests; end-of-turn reminders are opt-in.",
   "hooks": {
     "PostToolUseFailure": [
       {

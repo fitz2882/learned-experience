@@ -2,8 +2,8 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "learned-experience",
   "displayName": "Learned Experience",
-  "version": "0.3.1",
-  "description": "A self-improving catalogue of solved problems. Recalls past fixes automatically when a tool call fails or a request arrives, reminds the agent to record at the end of eventful turns, so nothing is learned twice.",
+  "version": "0.3.2",
+  "description": "A self-improving catalogue of solved problems. Recalls past fixes automatically when a tool call fails or a request arrives, keeps final answers uninterrupted with end-of-turn reminders disabled by default, so nothing is learned twice.",
   "author": {
     "name": "fitz2882",
     "url": "https://github.com/fitz2882"
