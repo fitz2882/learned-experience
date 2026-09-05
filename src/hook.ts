@@ -7,7 +7,7 @@
  *   AfterTool           (Gemini CLI) same as PostToolUse
  *   UserPromptSubmit    the user asked for something -> recall by the request, inject relevant past experience
  *   BeforeAgent         (Gemini CLI) same as UserPromptSubmit
- *   Stop                the turn is ending -> if it had failures and nothing was recorded, ask once for a record
+ *   Stop                silent by default; explicitly opt in to a blocking end-of-turn record reminder
  *
  * Everything before the catalogue lookup is deterministic string processing. The hook never blocks
  * a session on error: any failure is logged to stderr and the hook stays silent.
@@ -39,7 +39,7 @@ export interface HookOptions {
   limit?: number;
   /** Failure hook: say nothing when no record matches (default: a one-line nudge to record). */
   quietOnMiss?: boolean;
-  /** Stop hook: disable the end-of-turn record reminder. */
+  /** Stop hook: opt in to a blocking end-of-turn record reminder (default: false). */
   stopNudge?: boolean;
   /** Stop hook thresholds. */
   stopMinFailures?: number;
@@ -309,7 +309,9 @@ export function stopDecision(summary: TurnSummary, opts: HookOptions): Record<st
 }
 
 async function stopHook(input: HookInput, opts: HookOptions): Promise<Record<string, unknown> | null> {
-  if (opts.stopNudge === false) return null;
+  // A blocking Stop response starts another model continuation and can replace the final
+  // answer in Codex. Optional bookkeeping must not interrupt delivery by default.
+  if (opts.stopNudge !== true) return null;
   if (input.stop_hook_active) return null; // we already asked once this turn; never loop
   if (!input.transcript_path) return null;
   const read = opts.readTranscript ?? ((p: string) => readFile(p, "utf8"));
@@ -342,7 +344,7 @@ export function hookOptionsFromEnv(env: NodeJS.ProcessEnv): HookOptions {
   const num = (v: string | undefined) => (v && /^\d+$/.test(v) ? Number(v) : undefined);
   return {
     quietOnMiss: env.LEARNED_EXPERIENCE_HOOK_QUIET === "1",
-    stopNudge: env.LEARNED_EXPERIENCE_STOP_NUDGE !== "0",
+    stopNudge: env.LEARNED_EXPERIENCE_STOP_NUDGE === "1",
     stopMinFailures: num(env.LEARNED_EXPERIENCE_STOP_MIN_FAILURES),
     stopMinToolCalls: num(env.LEARNED_EXPERIENCE_STOP_MIN_CALLS),
     stopLongTurn: num(env.LEARNED_EXPERIENCE_STOP_LONG_TURN),

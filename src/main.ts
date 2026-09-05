@@ -86,8 +86,11 @@ async function main(): Promise<void> {
     // Never break the user's session: any failure here is logged and swallowed.
     try {
       const payload = JSON.parse(await readStdin()) as Parameters<typeof runHook>[0];
+      const hookOptions = hookOptionsFromEnv(process.env);
+      // Disabled Stop hooks need neither the catalogue nor a model/database startup.
+      if (payload.hook_event_name === "Stop" && !hookOptions.stopNudge) return;
       const { store, catalogue } = await openCatalogue(cfg);
-      const out = await runHook(payload, catalogue, hookOptionsFromEnv(process.env));
+      const out = await runHook(payload, catalogue, hookOptions);
       store.close();
       if (out) process.stdout.write(JSON.stringify(out));
     } catch (e) {

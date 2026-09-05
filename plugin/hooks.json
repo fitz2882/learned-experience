@@ -1,5 +1,5 @@
 {
-  "description": "learned-experience (Codex): recall past fixes after failed tool calls and on new requests; ask for a record after eventful turns.",
+  "description": "learned-experience: recall past fixes after failed tool calls and on new requests; end-of-turn reminders are opt-in.",
   "hooks": {
     "PostToolUse": [
       {
