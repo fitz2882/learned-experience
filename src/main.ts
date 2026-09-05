@@ -90,7 +90,7 @@ async function main(): Promise<void> {
       // Disabled Stop hooks need neither the catalogue nor a model/database startup.
       if (payload.hook_event_name === "Stop" && !hookOptions.stopNudge) return;
       const { store, catalogue } = await openCatalogue(cfg);
-      const out = await runHook(payload, catalogue, hookOptions);
+      const out = await runHook(payload, catalogue, { ...hookOptions, claimReminder: (key) => store.claimHookReminder(key) });
       store.close();
       if (out) process.stdout.write(JSON.stringify(out));
     } catch (e) {

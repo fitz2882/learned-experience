@@ -120,6 +120,12 @@ export class Store {
     this.db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
   }
 
+  /** Atomic across hook processes; only hashes are stored, never prompts or transcript content. */
+  claimHookReminder(key: string): boolean {
+    return this.db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)")
+      .run(`hook-reminder:${key}`, "sent").changes > 0;
+  }
+
   transaction<T>(fn: () => T): T {
     this.db.exec("BEGIN");
     try {

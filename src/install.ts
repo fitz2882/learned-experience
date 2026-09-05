@@ -64,6 +64,7 @@ interface HookSpec {
 
 const CLAUDE_HOOKS: HookSpec[] = [
   { event: "PostToolUseFailure", timeout: 30 },
+  { event: "PostToolUse", timeout: 30 },
   { event: "UserPromptSubmit", timeout: 20 },
   { event: "Stop", timeout: 20 },
 ];

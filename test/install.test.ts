@@ -46,6 +46,7 @@ describe("installHosts", () => {
     expect(claude.hooks.Stop).toHaveLength(2);
     expect(claude.hooks.Stop[0].hooks[0].command).toBe("echo bye");
     expect(claude.hooks.PostToolUseFailure[0].hooks[0]).toEqual({ type: "command", command: "npx -y learned-experience hook", timeout: 30 });
+    expect(claude.hooks.PostToolUse[0].hooks[0]).toEqual({ type: "command", command: "npx -y learned-experience hook", timeout: 30 });
     expect(claude.hooks.UserPromptSubmit[0].hooks[0].command).toBe("npx -y learned-experience hook");
     expect(byHost(first, "claude-code").manual[0]).toMatch(/claude mcp add --scope user learned-experience -- npx -y learned-experience/);
     expect(existsSync(join(home, ".claude", "settings.json.bak"))).toBe(true);
