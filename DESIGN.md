@@ -106,7 +106,7 @@ problem ──▶ recall ──▶ hit? ──yes──▶ apply fix ──▶ r
 
 MCP cannot intercept a model's reasoning, so on most hosts the "check memory when you hit a problem" trigger is prompt-driven. The server ships its protocol as `instructions` (every host injects those into the model's context), as the `learned-experience://protocol` resource, and as the `solve` prompt. Hosts with rule files (CLAUDE.md, .cursorrules, AGENTS.md) get a two-line snippet in the README.
 
-In Claude Code the trigger is mechanical. One command, `learned-experience hook`, is registered for three events and dispatches on the event name:
+In Claude Code the trigger is mechanical. One command, `learned-experience hook`, is registered for four events and dispatches on the event name:
 
 **PostToolUseFailure** (a tool call failed):
 
@@ -117,6 +117,10 @@ In Claude Code the trigger is mechanical. One command, `learned-experience hook`
 5. writes `hookSpecificOutput.additionalContext` with the hits and the instruction to `reinforce`, or a one-line nudge to `record` when nothing matches.
 
 **UserPromptSubmit** (the user sent a request): the request becomes the `problem`, any error-like lines in it become `signals`, and recall runs with a higher score floor (0.5) because a request is a weaker signal than an error string. Hits are injected before the model starts; a miss is silent, since most requests have no history. Prompts under 20 characters and slash commands are skipped.
+
+**PostToolUse** (a tool call completed): failed calls use the existing failure-recall path. After a successful call, the default-on recording reminder reads the last turn of a supported Claude Code or Codex transcript. Once work crosses the configured threshold (a failure across at least three calls, or fifteen calls), it supplies non-blocking `additionalContext`: record a verified reusable lesson before the final answer, skip trivia, and keep the answer focused on the user's request. It never emits a blocking decision and starts no additional model run. A missing/unknown transcript, a direct `record`/`reinforce` call, the plugin's own tools, or an existing Codex final response suppress the reminder. `LEARNED_EXPERIENCE_RECORD_NUDGE=0` disables it independently of recall and Stop settings.
+
+The CLI atomically claims a SHA-256 hash of the transcript path and last user boundary in SQLite metadata before emitting the reminder. Duplicate hook processes cannot both claim the same turn. Including the user boundary's line offset distinguishes repeated identical requests in one transcript. Only the hash is persisted, never the prompt or transcript text. A hook crash after claiming can lose that optional reminder, which is preferable to reopening a final answer or repeatedly nagging. These markers are local metadata and are not exported as experiences.
 
 **Stop** (the turn is ending): silent by default. The CLI returns before opening the catalogue, and the hook does not read the transcript. Optional bookkeeping must not interrupt answer delivery: in Codex, a blocking Stop response starts a continuation that can replace the substantive final answer. Only an explicit `LEARNED_EXPERIENCE_STOP_NUDGE=1` (or `stopNudge: true` for direct callers) enables the legacy reminder. When enabled, the hook reads the transcript, isolates the last turn (from the last human message), and counts tool calls, failed tool results, and calls to learned-experience's own `record`, `reinforce`, and `recall`. If nothing was recorded and the turn was eventful (at least one failure across three or more calls, or fifteen or more calls), it returns `decision: "block"` with a reason asking the model to `record` once, or `reinforce` if it applied a recalled fix, or stop if nothing is worth keeping. Claude Code sets `stop_hook_active` on the retry, and the hook returns nothing then, so it asks at most once per turn.
 

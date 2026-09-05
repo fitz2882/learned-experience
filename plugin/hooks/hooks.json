@@ -1,5 +1,5 @@
 {
-  "description": "learned-experience: recall past fixes after failed tool calls and on new requests; end-of-turn reminders are opt-in.",
+  "description": "learned-experience: recall past fixes and remind the agent during work, without interrupting final answers.",
   "hooks": {
     "PostToolUseFailure": [
       {
@@ -30,6 +30,17 @@
             "type": "command",
             "command": "npx -y learned-experience hook",
             "timeout": 20
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y learned-experience hook",
+            "timeout": 30
           }
         ]
       }

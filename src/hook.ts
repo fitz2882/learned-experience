@@ -3,7 +3,7 @@
  * dispatches on the event name:
  *
  *   PostToolUseFailure  (Claude Code) a tool call failed -> recall by error text, inject matching fixes
- *   PostToolUse         (Codex) after every tool call -> same, but only when the response looks like a failure
+ *   PostToolUse         recall on failure; otherwise remind once during substantial work, before the final answer
  *   AfterTool           (Gemini CLI) same as PostToolUse
  *   UserPromptSubmit    the user asked for something -> recall by the request, inject relevant past experience
  *   BeforeAgent         (Gemini CLI) same as UserPromptSubmit
@@ -13,6 +13,7 @@
  * a session on error: any failure is logged to stderr and the hook stays silent.
  */
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import type { Catalogue } from "./catalogue.js";
 import { clean } from "./normalize.js";
 import type { RecallHit } from "./schema.js";
@@ -45,6 +46,13 @@ export interface HookOptions {
   stopMinFailures?: number;
   stopMinToolCalls?: number;
   stopLongTurn?: number;
+  /** Remind during work through non-blocking tool context (default: true). */
+  recordNudge?: boolean;
+  recordMinFailures?: number;
+  recordMinToolCalls?: number;
+  recordLongTurn?: number;
+  /** CLI supplies durable, atomic once-per-turn deduplication. Receives a hash, not transcript text. */
+  claimReminder?: (key: string) => boolean;
   /** Test seam for reading the transcript. */
   readTranscript?: (path: string) => Promise<string>;
 }
@@ -53,7 +61,7 @@ const NAME = "learned-experience";
 const ERROR_LINE = /\b(error|exception|fail(ed|ure|s|ing)?|denied|not found|cannot|can't|unable|refused|panic|traceback|fatal|invalid|missing|timed? ?out|unexpected|broken|crash(es|ed|ing)?|ENOENT|EACCES|ECONN)\b/i;
 const NOISE_LINE = /^\s*(at\s+\S|\s*\^+\s*$|node:internal|\(node:\d+\)|npm (ERR!|warn)\s*$|\s*$)/i;
 const SKIP_ERROR = /\b(interrupted|cancel+ed|aborted by user|user denied|permission (was )?denied by (the )?user|rejected by user)\b/i;
-const OWN_TOOL = /learned-experience__/;
+const OWN_TOOL = /learned[-_]experience__/;
 
 // ------------------------------------------------------------------ shared
 
@@ -218,7 +226,7 @@ export interface TurnSummary {
   recalled: boolean;
 }
 
-type TurnItem = { kind: "user" } | { kind: "tool_use"; name: string } | { kind: "tool_result"; failed: boolean };
+type TurnItem = { kind: "user" } | { kind: "final" } | { kind: "tool_use"; name: string } | { kind: "tool_result"; failed: boolean };
 
 /**
  * Normalise one transcript line into turn items. Two shapes are understood:
@@ -246,6 +254,7 @@ function turnItems(e: Record<string, unknown>): TurnItem[] {
   if (e.type === "event_msg" && p.type === "user_message") return [{ kind: "user" }];
   if (e.type !== "response_item") return [];
   if (p.type === "message" && p.role === "user") return [{ kind: "user" }];
+  if (p.type === "message" && p.role === "assistant" && p.channel === "final") return [{ kind: "final" }];
   if (p.type === "function_call" || p.type === "custom_tool_call" || p.type === "local_shell_call") {
     return [{ kind: "tool_use", name: String(p.name ?? p.type) }];
   }
@@ -259,23 +268,35 @@ function turnItems(e: Record<string, unknown>): TurnItem[] {
  * Summarise the last turn of a transcript (JSONL): how many tool calls, how many failed,
  * and whether the model already talked to the catalogue. Unknown line shapes are ignored.
  */
-export function summarizeLastTurn(jsonl: string): TurnSummary {
-  const items: TurnItem[] = [];
-  for (const line of jsonl.split(/\r?\n/)) {
+function lastTurn(jsonl: string): { items: TurnItem[]; boundary: string | null } {
+  let items: TurnItem[] = [];
+  let boundary: string | null = null;
+  for (const [index, line] of jsonl.split(/\r?\n/).entries()) {
     if (!line.trim()) continue;
     try {
       const parsed = JSON.parse(line);
-      if (parsed && typeof parsed === "object") items.push(...turnItems(parsed as Record<string, unknown>));
+      if (parsed && typeof parsed === "object") {
+        const next = turnItems(parsed as Record<string, unknown>);
+        if (next.some((it) => it.kind === "user")) {
+          items = [];
+          boundary = `${index}:${line}`;
+        }
+        items.push(...next);
+      }
     } catch {
       /* skip malformed lines */
     }
   }
-  let start = 0;
-  items.forEach((it, i) => {
-    if (it.kind === "user") start = i;
-  });
+  return { items, boundary };
+}
+
+export function summarizeLastTurn(jsonl: string): TurnSummary {
+  return summarizeItems(lastTurn(jsonl).items);
+}
+
+function summarizeItems(items: TurnItem[]): TurnSummary {
   const summary: TurnSummary = { toolCalls: 0, failures: 0, recorded: false, recalled: false };
-  for (const it of items.slice(start)) {
+  for (const it of items) {
     if (it.kind === "tool_use") {
       summary.toolCalls++;
       if (OWN_TOOL.test(it.name) && /(record|reinforce)$/.test(it.name)) summary.recorded = true;
@@ -285,6 +306,31 @@ export function summarizeLastTurn(jsonl: string): TurnSummary {
     }
   }
   return summary;
+}
+
+/** Model-only context after a successful tool call. Never blocks or starts another model run. */
+async function recordReminder(input: HookInput, opts: HookOptions): Promise<Record<string, unknown> | null> {
+  if (opts.recordNudge === false || !input.transcript_path || !opts.claimReminder || !input.tool_name || OWN_TOOL.test(input.tool_name)) return null;
+  let turn: ReturnType<typeof lastTurn>;
+  try {
+    const read = opts.readTranscript ?? ((p: string) => readFile(p, "utf8"));
+    turn = lastTurn(await read(input.transcript_path));
+  } catch {
+    return null; // a missing/incomplete transcript must not interrupt the task
+  }
+  if (!turn.boundary || turn.items.some((it) => it.kind === "final")) return null;
+  const summary = summarizeItems(turn.items);
+  const eventful =
+    (summary.failures >= (opts.recordMinFailures ?? 1) && summary.toolCalls >= (opts.recordMinToolCalls ?? 3)) ||
+    summary.toolCalls >= (opts.recordLongTurn ?? 15);
+  if (summary.recorded || !eventful) return null;
+  const key = createHash("sha256").update(JSON.stringify([input.transcript_path, turn.boundary])).digest("hex");
+  if (!opts.claimReminder(key)) return null;
+  return contextOutput(input.hook_event_name!,
+    `${NAME}: before your final answer, if this work produced a reusable lesson you have not recorded, ` +
+    `call \`record\` once (or \`reinforce\` if you applied a recalled fix). ` +
+    `Wait until the outcome is verified; skip this if there is nothing worth keeping. ` +
+    `This is internal bookkeeping: keep your final answer focused on the user's request, not this reminder.`);
 }
 
 export function stopDecision(summary: TurnSummary, opts: HookOptions): Record<string, unknown> | null {
@@ -329,9 +375,11 @@ export async function runHook(input: HookInput, catalogue: Catalogue, opts: Hook
       return promptHook(input, catalogue, opts, input.hook_event_name);
     case "Stop":
       return stopHook(input, opts);
-    case "PostToolUse": // Codex has no failure event: fire only when the response looks like one
+    case "PostToolUse": // recall failures; successful calls can carry a non-blocking recording reminder
     case "AfterTool": // Gemini CLI, same idea; tool_response carries an `error` field on failure
-      return looksFailed(input.tool_response, input.error) ? failureHook(input, catalogue, opts, input.hook_event_name) : null;
+      return looksFailed(input.tool_response, input.error)
+        ? failureHook(input, catalogue, opts, input.hook_event_name)
+        : recordReminder(input, opts);
     case "PostToolUseFailure":
     case undefined: // older registrations passed no event name; treat as a failure payload
       return failureHook(input, catalogue, opts, "PostToolUseFailure");
@@ -348,6 +396,10 @@ export function hookOptionsFromEnv(env: NodeJS.ProcessEnv): HookOptions {
     stopMinFailures: num(env.LEARNED_EXPERIENCE_STOP_MIN_FAILURES),
     stopMinToolCalls: num(env.LEARNED_EXPERIENCE_STOP_MIN_CALLS),
     stopLongTurn: num(env.LEARNED_EXPERIENCE_STOP_LONG_TURN),
+    recordNudge: env.LEARNED_EXPERIENCE_RECORD_NUDGE !== "0",
+    recordMinFailures: num(env.LEARNED_EXPERIENCE_RECORD_MIN_FAILURES),
+    recordMinToolCalls: num(env.LEARNED_EXPERIENCE_RECORD_MIN_CALLS),
+    recordLongTurn: num(env.LEARNED_EXPERIENCE_RECORD_LONG_TURN),
   };
 }
 

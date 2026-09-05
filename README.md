@@ -22,7 +22,7 @@ That detects the agents on your machine and configures each one: the MCP server 
 
 | Host | What `install` does | What you still do |
 |---|---|---|
-| Claude Code | Registers the server with `claude mcp add`, adds three hooks to `~/.claude/settings.json`. Skipped if the plugin below is installed. | Restart Claude Code |
+| Claude Code | Registers the server with `claude mcp add`, adds failure, after-tool, prompt, and optional Stop hooks to `~/.claude/settings.json`. Skipped if the plugin below is installed. | Restart Claude Code |
 | Codex CLI and the Codex desktop app | Registers the server with `codex mcp add`, adds three hooks to `~/.codex/hooks.json`. The desktop app (inside the ChatGPT app) reads the same `~/.codex` configuration. | Run `/hooks` once in Codex to trust them |
 | Gemini CLI | Adds the server and two hooks to `~/.gemini/settings.json` | Nothing |
 | OpenClaw | Adds the server under `mcp.servers` in `~/.openclaw/openclaw.json` (or via `openclaw mcp add` when the file uses JSON5 syntax) | Restart the gateway. OpenClaw hooks are in-process plugins, not shell commands, so the model follows the protocol from MCP instructions. |
@@ -100,6 +100,7 @@ MCP cannot see a model's reasoning, so without hooks the model has to remember t
 |---|---|---|---|---|
 | **A tool call fails** | `PostToolUseFailure` | `PostToolUse` | `AfterTool` | The error text becomes a query. Matching fixes are injected with the instruction to apply one and `reinforce`. On a miss, a one-line reminder to `record` once solved. Codex and Gemini have no failure event, so the hook runs after every tool call and acts only when the response carries a non-zero exit code, an error flag, or unmistakable failure text. |
 | **You send a request** | `UserPromptSubmit` | `UserPromptSubmit` | `BeforeAgent` | The request becomes a query. If past experience looks relevant it is injected before the model starts. Silent otherwise; skipped for short prompts and slash commands. |
+| **Work becomes substantial** | `PostToolUse` | `PostToolUse` | no transcript-based reminder yet | After a successful tool call, the hook checks the current transcript. After a failure across at least three calls, or fifteen calls without failures, it sends one non-blocking reminder to record a verified lesson before the final answer. No extra model run is started. |
 | **The turn ends** | `Stop` | `Stop` | not available | Silent by default so the final answer is delivered without a housekeeping continuation. Explicitly setting `LEARNED_EXPERIENCE_STOP_NUDGE=1` enables the legacy blocking reminder after eventful turns; its loop guard still applies. |
 
 What the model sees after a failure:
@@ -118,6 +119,7 @@ Failures caused by you (interrupts, permission denials) and failures of learned-
 {
   "hooks": {
     "PostToolUseFailure": [{ "hooks": [{ "type": "command", "command": "npx -y learned-experience hook", "timeout": 30 }] }],
+    "PostToolUse":         [{ "hooks": [{ "type": "command", "command": "npx -y learned-experience hook", "timeout": 30 }] }],
     "UserPromptSubmit":   [{ "hooks": [{ "type": "command", "command": "npx -y learned-experience hook", "timeout": 20 }] }],
     "Stop":               [{ "hooks": [{ "type": "command", "command": "npx -y learned-experience hook", "timeout": 20 }] }]
   }
@@ -127,6 +129,10 @@ Failures caused by you (interrupts, permission denials) and failures of learned-
 Codex uses the same shape in `~/.codex/hooks.json` with `PostToolUse` (see [examples/codex-hooks.json](examples/codex-hooks.json)). Gemini CLI uses `hooks` inside `~/.gemini/settings.json` with `AfterTool` and `BeforeAgent`, timeouts in milliseconds, and a `name` on each hook.
 
 Existing installations running an older npm version can disable the reminder immediately by changing only the Stop command to `LEARNED_EXPERIENCE_STOP_NUDGE=0 npx -y learned-experience hook` in their hook configuration (POSIX shells). Keep the failure and prompt hooks enabled; they provide recall and recording guidance during the work. No stored experiences need to change.
+
+Recording reminders are **on by default during work**. They are attached as tool context, not a new user request. The agent can record a useful lesson or skip trivia, then deliver the original answer. The reminder is advisory, so it does not guarantee that every lesson is recorded. Failure recall and prompt recall remain enabled independently.
+
+The transcript-based reminder currently understands Claude Code and Codex JSONL. It stays silent if the transcript is missing or unrecognized, a direct `record`/`reinforce` call is already present, or a Codex final answer has been written. One hashed marker per reminded turn is stored atomically in local SQLite metadata to prevent duplicate reminders across hook processes; prompt and transcript text are not stored in these markers. Hosts without a supported transcript still receive the existing failure-time recording guidance. Existing Claude Code installs should rerun `learned-experience install claude-code` (or update the plugin) to add the successful `PostToolUse` hook. Codex already registers it.
 
 ### Hosts without hooks
 
@@ -194,6 +200,10 @@ All optional.
 | `LEARNED_EXPERIENCE_EMBED_BASE_URL` | per provider | Any OpenAI-compatible endpoint, or the Ollama base URL |
 | `LEARNED_EXPERIENCE_EMBED_API_KEY` | `$OPENAI_API_KEY` | Key for remote providers |
 | `LEARNED_EXPERIENCE_HOOK_QUIET` | unset | `1`: no reminder after a failure that matches nothing |
+| `LEARNED_EXPERIENCE_RECORD_NUDGE` | `1` | `0`: disable the non-blocking recording reminder during work |
+| `LEARNED_EXPERIENCE_RECORD_MIN_FAILURES` | `1` | Failures needed for the during-work reminder |
+| `LEARNED_EXPERIENCE_RECORD_MIN_CALLS` | `3` | Tool calls needed alongside those failures |
+| `LEARNED_EXPERIENCE_RECORD_LONG_TURN` | `15` | Tool calls that qualify even without failures |
 | `LEARNED_EXPERIENCE_STOP_NUDGE` | `0` | Only `1` opts in to a blocking end-of-turn reminder. Leave disabled in Codex: a continuation can replace the final answer. |
 | `LEARNED_EXPERIENCE_STOP_MIN_FAILURES` | `1` | Failed tool calls needed before the end-of-turn reminder |
 | `LEARNED_EXPERIENCE_STOP_MIN_CALLS` | `3` | Tool calls needed before the end-of-turn reminder |
