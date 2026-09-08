@@ -154,7 +154,7 @@ function isOurs(entry: unknown): boolean {
 }
 
 /** Add or remove our hook entries in a `{ "hooks": { Event: [ { hooks: [...] } ] } }` structure. */
-function mergeHooks(data: Record<string, unknown>, specs: HookSpec[], launch: Launch, uninstall: boolean): string[] {
+function mergeHooks(data: Record<string, unknown>, specs: HookSpec[], launch: Launch, uninstall: boolean, codex = false): string[] {
   const hooks = (data.hooks && typeof data.hooks === "object" ? data.hooks : {}) as Record<string, unknown>;
   const changes: string[] = [];
   for (const spec of specs) {
@@ -166,7 +166,7 @@ function mergeHooks(data: Record<string, unknown>, specs: HookSpec[], launch: La
         changes.push(`removed ${spec.event} hook`);
       }
     } else {
-      const h: Record<string, unknown> = { type: "command", command: hookCommand(launch), timeout: spec.timeout };
+      const h: Record<string, unknown> = { type: "command", command: hookCommand(launch) + (codex ? " --codex" : ""), timeout: spec.timeout };
       if (spec.name) h.name = SERVER;
       if (spec.statusMessage) h.statusMessage = spec.statusMessage;
       const entry = { hooks: [h] };
@@ -276,7 +276,7 @@ export function installHosts(opts: InstallOptions): HostReport[] {
       }
       const hooksFile = join(dir, "hooks.json");
       const data = readJson(hooksFile);
-      const changes = mergeHooks(data, CODEX_HOOKS, launch, uninstall);
+      const changes = mergeHooks(data, CODEX_HOOKS, launch, uninstall, true);
       if (changes.length) {
         if (!data.description && !uninstall) data.description = "Hooks for learned-experience";
         w.writeJson(hooksFile, data);

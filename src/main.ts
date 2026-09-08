@@ -31,7 +31,7 @@ const USAGE =
   "usage: learned-experience [--http [--port N] [--host H]]\n" +
   "       learned-experience install [host ...] [--dry-run] [--local]   register server + hooks with detected agent hosts\n" +
   "       learned-experience uninstall [host ...] [--dry-run]\n" +
-  "       learned-experience hook | recall <text> | stats | export <file> | import <file>\n" +
+  "       learned-experience hook [--codex] | recall <text> | stats | export <file> | import <file>\n" +
   `hosts: ${ALL_HOSTS.join(", ")}\n`;
 
 function parseArgs(argv: string[]) {
@@ -45,6 +45,7 @@ function parseArgs(argv: string[]) {
     hosts: [] as HostId[],
     dryRun: false,
     local: false,
+    codex: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -53,6 +54,7 @@ function parseArgs(argv: string[]) {
     else if (a === "--host") args.host = argv[++i];
     else if (a === "--dry-run") args.dryRun = true;
     else if (a === "--local") args.local = true;
+    else if (a === "--codex") args.codex = true;
     else if (a === "hook" || a === "stats" || a === "install" || a === "uninstall") args.command = a;
     else if (a === "recall") {
       args.command = a;
@@ -86,7 +88,7 @@ async function main(): Promise<void> {
     // Never break the user's session: any failure here is logged and swallowed.
     try {
       const payload = JSON.parse(await readStdin()) as Parameters<typeof runHook>[0];
-      const hookOptions = hookOptionsFromEnv(process.env);
+      const hookOptions = { ...hookOptionsFromEnv(process.env), codex: args.codex };
       // Disabled Stop hooks need neither the catalogue nor a model/database startup.
       if (payload.hook_event_name === "Stop" && !hookOptions.stopNudge) return;
       const { store, catalogue } = await openCatalogue(cfg);

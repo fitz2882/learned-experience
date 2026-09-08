@@ -45,7 +45,7 @@ it("CLI sends one non-blocking reminder across processes and leaves Stop silent"
     const run = (event: string) => {
       const result = spawnSync(process.execPath, ["--import", "tsx", fileURLToPath(new URL("../src/index.ts", import.meta.url)), "hook"], {
         env,
-        input: JSON.stringify({ hook_event_name: event, transcript_path: transcript, tool_name: "Bash", tool_response: { exit_code: 0 } }),
+        input: JSON.stringify({ turn_id: "codex-turn", hook_event_name: event, transcript_path: transcript, tool_name: "Bash", tool_response: { exit_code: 0 } }),
         encoding: "utf8",
         timeout: 10_000,
       });
@@ -55,6 +55,7 @@ it("CLI sends one non-blocking reminder across processes and leaves Stop silent"
       return result.stdout;
     };
     const first = JSON.parse(run("PostToolUse"));
+    expect(first).not.toHaveProperty("additionalContext");
     expect(first.decision).toBeUndefined();
     expect(first.continue).toBeUndefined();
     expect(first.hookSpecificOutput.hookEventName).toBe("PostToolUse");

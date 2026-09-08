@@ -28,6 +28,8 @@ export interface HookInput {
   transcript_path?: string;
   stop_hook_active?: boolean;
   session_id?: string;
+  /** Codex extension, also identifies older hook registrations without --codex. */
+  turn_id?: string;
 }
 
 export interface HookQuery {
@@ -37,6 +39,8 @@ export interface HookQuery {
 }
 
 export interface HookOptions {
+  /** Emit only fields accepted by Codex hook schemas. */
+  codex?: boolean;
   limit?: number;
   /** Failure hook: say nothing when no record matches (default: a one-line nudge to record). */
   quietOnMiss?: boolean;
@@ -177,7 +181,7 @@ async function failureHook(input: HookInput, catalogue: Catalogue, opts: HookOpt
   return contextOutput(eventName, text);
 }
 
-/** Claude Code and Codex read hookSpecificOutput.additionalContext; Gemini CLI reads the top-level field. Emit both. */
+/** Preserve the legacy Claude/Gemini output; runHook removes the extra field for Codex. */
 function contextOutput(eventName: string, text: string): Record<string, unknown> {
   return { additionalContext: text, hookSpecificOutput: { hookEventName: eventName, additionalContext: text } };
 }
@@ -367,8 +371,8 @@ async function stopHook(input: HookInput, opts: HookOptions): Promise<Record<str
 
 // ------------------------------------------------------------------ dispatch
 
-/** Payload in, Claude Code hook JSON out (or null for silence). */
-export async function runHook(input: HookInput, catalogue: Catalogue, opts: HookOptions = {}): Promise<Record<string, unknown> | null> {
+/** Dispatch before host-specific output serialization. */
+async function dispatchHook(input: HookInput, catalogue: Catalogue, opts: HookOptions = {}): Promise<Record<string, unknown> | null> {
   switch (input.hook_event_name) {
     case "UserPromptSubmit": // Claude Code, Codex
     case "BeforeAgent": // Gemini CLI
@@ -386,6 +390,15 @@ export async function runHook(input: HookInput, catalogue: Catalogue, opts: Hook
     default:
       return null;
   }
+}
+
+/** Serialize context for the host without changing recall, reminders, or silent runs. */
+export async function runHook(input: HookInput, catalogue: Catalogue, opts: HookOptions = {}): Promise<Record<string, unknown> | null> {
+  const output = await dispatchHook(input, catalogue, opts);
+  if (output && (opts.codex || typeof input.turn_id === "string")) {
+    delete output.additionalContext;
+  }
+  return output;
 }
 
 export function hookOptionsFromEnv(env: NodeJS.ProcessEnv): HookOptions {

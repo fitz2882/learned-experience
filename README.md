@@ -244,3 +244,5 @@ through another project or `npx`; this change alone does **not** remediate the
 published package. Before a release claims these fixes, update the upstream
 ranges or adopt and verify a published dependency-locking strategy with an
 isolated consumer-install test. See [npm override semantics](https://docs.npmjs.com/cli/v11/configuring-npm/package-json#overrides).
+
+Codex hook commands use `learned-experience hook --codex` to emit schema-compatible context only in `hookSpecificOutput.additionalContext`. Existing registrations with Codex’s `turn_id` payload are detected automatically. Claude Code and Gemini retain their existing output format.
