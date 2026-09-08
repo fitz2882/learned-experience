@@ -58,7 +58,7 @@ describe("installHosts", () => {
     const codex = json(join(home, ".codex", "hooks.json"));
     expect(codex.description).toBe("mine");
     expect(codex.hooks.SessionStart[0].hooks[0].command).toBe("start.sh");
-    expect(codex.hooks.PostToolUse[0].hooks[0]).toMatchObject({ command: "npx -y learned-experience hook", timeout: 30 });
+    expect(codex.hooks.PostToolUse[0].hooks[0]).toMatchObject({ command: "npx -y learned-experience hook --codex", timeout: 30 });
     expect(codex.hooks.Stop).toHaveLength(1);
     expect(byHost(first, "codex").manual.some((m) => /\/hooks/.test(m))).toBe(true);
 
