@@ -28,6 +28,9 @@
       "Read",
       "Write"
     ],
-    "websiteURL": "https://github.com/fitz2882/learned-experience"
+    "websiteURL": "https://github.com/fitz2882/learned-experience",
+    "defaultPrompt": [
+      "Recall relevant past fixes for this task and verify any advice before applying it."
+    ]
   }
 }

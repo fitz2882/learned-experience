@@ -20,7 +20,7 @@ Verified locally on 2026-09-09 before publication. The checks below used isolate
 | Built-server quality replay | 11 checks pass over real MCP stdio and local MiniLM embeddings |
 | Retrieval regression subset | 3 positive queries return their expected lesson; 3 unrelated queries return no results |
 | Installed-artifact shape | npm package includes the new learning, maintenance and worker runtime modules |
-| Packaged runtime | Same 11-check replay passes using the existing workspace dependency graph |
+| Packaged runtime | Same 11-check replay passes with both workspace dependencies and a fresh consumer install of the release tarball |
 | Codex hooks | PostToolUse/UserPromptSubmit output validates against committed host schema fixtures; Stop emits no output |
 | Real catalogue replay | Isolated copy of 112 records loads with all embeddings and no embedding error; useful matches retained and pandas false positive removed |
 | Actual Workday duplicate pair | Automatically identified for review; reviewed grouping yields one recall slot while retaining both records |
@@ -44,7 +44,7 @@ GVR-VERIFY: PASS for the implemented scope after revisions; no known blocking te
 - Deterministic detection runs automatically while an MCP server or standalone worker is running. Semantic corrections require an active cooperating host agent with evidence; unresolved jobs remain queued. No external reviewer or new cloud costs were introduced.
 - Exact scope/version checks are supported. Automatic filesystem artifact-drift watchers and host-attested execution receipts are not implemented.
 - The six retrieval queries are regression checks, not a general accuracy benchmark. Desktop final-answer rendering was not independently observed.
-- Packaged runtime testing reuses the workspace's dependency graph. This is not a fresh npm-registry consumer installation or a new dependency-security claim.
+- A fresh install of the release tarball and registry-resolved dependencies also passes all 11 runtime checks. This is a runtime compatibility check, not a new dependency-security claim.
 - Marketplace launch commands pin the runtime to 0.4.0. Existing installations require a marketplace update and host restart. Upgrade all writers together after a backup; older binaries may strip fields they do not understand.
 
 Reproduce with `npm run typecheck`, `npm test`, and `npm run quality`. See README.md for the maintenance and verification workflow.
