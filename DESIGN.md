@@ -1,143 +1,56 @@
 # learned-experience: design
 
-## Goal
+The catalogue is local, portable and model/provider independent. SQLite contains the observations, lesson revisions, verification reports and a durable maintenance queue. The core does not call a language model or execute commands from records. Hosts supply semantic judgment and checked evidence through MCP.
 
-Give any AI agent a persistent, portable catalogue of problems it has solved before, so that nothing has to be learned twice. The agent checks the catalogue when it hits a problem, applies what worked, reports back whether it worked, and records new lessons. Over time recall gets faster and more reliable because the ranking is fed by real outcomes.
+## Content, evidence and current applicability
 
-Two constraints shaped every decision:
+The v1 record format has optional additive extensions for applicability, preconditions, structured claims, observations, votes, lifecycle, review decisions and historical snapshots. Older records remain readable and retain their reported counters. Missing evidence remains unknown. All writers must upgrade together: older binaries may strip unknown fields when rewriting records.
 
-1. **Model and provider agnostic.** The user owns the catalogue and carries it to any agent, any model, any host. So the server speaks plain MCP over stdio (and optionally streamable HTTP), stores everything in one local file, and never depends on a specific vendor for the core loop.
-2. **Deterministic wherever possible.** Only one component involves a model at all (the embedding step), and it is pinned by id so identical inputs always give identical vectors. Everything else, including fingerprinting, lexical search, fusion, ranking, dedup, and clustering, is pure code.
+A lesson revision is a SHA-256 digest of its canonical problem, signals, context, remedy, avoid-list, root cause, resolution, kind, scope and preconditions/claims. Source labels, observations, attempted-action logs, counters, timestamps and verification votes do not change the revision. Changed solution content never inherits old verification. `amend`, merge reports and review decisions retain snapshots. A correction supplied by a second successful report is preserved for review rather than silently discarded or accepted because it is newer.
 
-## How it differs from adjacent work
+`outcome` describes resolution: a partial or empty fix is a diagnostic lead. `lifecycle` describes availability: active, needs-review, disputed, superseded. Structured claims with conflicting values in the same scope are marked disputed at recall until evidence resolves them. A diagnostic lead remains retrievable, but cannot masquerade as a verified solution. Superseded records are excluded by default, including exact matches; explicit historical retrieval can include them.
 
-| | learned-experience | Google WikiSkill (arXiv 2608.27454) | General memory servers |
-|---|---|---|---|
-| When knowledge is used | Online, at the moment of failure | Offline, compiled into SKILL.md between runs | Whenever the agent chooses |
-| Retrieval | Fingerprint + dense + BM25 | None (agent is barred from the wiki) | Usually vector only |
-| Record shape | Fixed compact schema | Free markdown pages | Free text |
-| Feedback | Per-record success/failure counts | Per-skill validation gating | Rarely |
-| Dedup | Server-enforced merge | LLM patch-editing | Rarely |
-| Interface | MCP | Filesystem | MCP |
+`applicability` contains exact product/version/platform/project constraints. A known mismatch excludes a record. Missing information is labeled unknown and prevents verification voting until supplied. Versions are exact strings; unsupported scope fields are rejected. `preconditions` are returned for the host to check; the core cannot verify arbitrary environmental prose.
 
-The two are complementary: this catalogue is exactly the kind of experience source a WikiSkill-style compiler could distill from. The `consolidate` tool is the seam for that.
+## Votes
 
-## The record
+`begin_attempt` returns a revision and a hashed execution identity, without running or authorizing the fix. Agents observing the same execution must share that identity. `feedback` stores one event per lesson revision and execution identity:
 
-The wire format is the interoperability contract. It is deliberately small. Every field is read by a model on every future recall, so every field has to pay for itself.
+- verified-success / verified-failure require test or target-environment evidence, its observation time/reference, a nonempty fix and a matching environment;
+- diagnostic-help measures diagnostic usefulness;
+- relevant / irrelevant measure retrieval fit;
+- unverified records uncertainty and does not count as failure.
 
-```jsonc
-{
-  "id": "x_9f1c2a4b7d3e",
-  "v": 1,
-  "kind": "episode",                 // or "rule": a generalisation distilled from several episodes
-  "problem": "App cannot connect to local Postgres",           // ≤ 240 chars, generic
-  "signals": ["Error: connect ECONNREFUSED 127.0.0.1:5432"],   // ≤ 8 exact strings; the deterministic key
-  "context": ["macos", "node", "postgres"],                     // ≤ 10 normalised tags
-  "attempts": [                                                 // ≤ 12, ordered
-    { "action": "restart app", "result": "failed" },
-    { "action": "brew services start postgresql@16", "result": "worked" }
-  ],
-  "fix": "Start the Postgres service: brew services start postgresql@16",   // ≤ 600 chars
-  "avoid": ["Restarting the app does nothing; the DB is not running"],       // ≤ 8
-  "root_cause": "Postgres service was not running after reboot",            // ≤ 300, optional
-  "outcome": "success",              // success | partial | failure
-  "related": [],                     // records with the same symptom but a different fix
-  "stats": { "uses": 3, "successes": 3, "failures": 0, "merged": 1, "last_used": "2026-09-01T12:00:03Z" },
-  "source": { "agent": "claude-code", "model": "claude-fable-5-1" },
-  "fingerprint": "5d41402abc4b2a76b9719d911017c592",
-  "created": "2026-09-01T12:00:00Z",
-  "updated": "2026-09-01T12:00:03Z"
-}
-```
+Duplicate reports are idempotent; contradictory reports with the same identity fail. Reads and updates occur under SQLite's writer lock, so multiple hosts cannot overwrite each other's votes. Independence and truth are reported by hosts, not cryptographically attested. The system must not infer a causal success from an unrelated later command, nor count several observers of one test as independent successes.
 
-`recall` does not return the full record. It returns a terse hit (id, problem, fix, avoid, root_cause, context, outcome, confidence, uses, match) to keep token cost low.
+Reliability is `(verified successes + 1) / (verified attempts + 2)` for the current revision and matching environment. This is a smoothed ranking signal, not a calibrated probability of truth. Counts, evidence level and last verification time are returned alongside it. Unresolved/empty fixes have no solution reliability. Old `reinforce` counters remain accessible but contribute no verified votes. Failure notes retained through the legacy API preserve the previous revision before altering the avoid-list.
 
-Every string is cleaned on write: credentials are redacted (API keys, tokens, JWTs, bearer headers, `key=value` secrets, emails, URL credentials) and home directories are rewritten to `~` so records compare equal across machines and users.
+## Retrieval and abstention
 
-## Retrieval: three layers, fused deterministically
+Candidate retrieval combines normalized error fingerprints, local sentence embeddings and BM25. Error normalization collapses volatile addresses/ids/versions; therefore exact matches still require applicability checks and cannot override supersession.
 
-1. **Exact layer.** Each signal is normalised (lowercase, numbers, hex, hashes, UUIDs, timestamps, and addresses collapsed to `#`) and hashed. A query hits exactly when any signal key matches a stored one in a compatible context, or when the whole-problem fingerprint matches. Exact hits score 1.0 and are marked `exact: true`. No model is involved.
-2. **Lexical layer.** A pure TypeScript BM25 index over problem, signals, context, and root cause, with a small deterministic stemmer. Scores are normalised to the best hit for the query.
-3. **Dense layer.** Cosine similarity over embeddings of the problem side only (problem + signals + context), so queries and records are symmetric. Default model is all-MiniLM-L6-v2 running locally through ONNX; first use downloads ~23 MB and after that it runs offline. OpenAI-compatible and Ollama providers are opt-in.
+BM25 identifies lexical candidates; their contribution is the square root of query-token coverage rather than normalization against the best available hit. This avoids promoting a weak best match simply because no good alternative exists. Dense similarity supplies paraphrase recall. Default fusion remains 0.6 dense / 0.4 lexical, or lexical-only without an embedder. Weak lexical coverage needs a stronger semantic match; the default score floor is 0.45. These are explicit heuristics tested against positive and no-answer fixtures, not universal calibrated thresholds.
 
-Fusion: `base = 0.6 · dense + 0.4 · lexical` (lexical alone when there is no embedder), overridden to 1.0 for exact hits. Then `final = base · (0.7 + 0.3 · confidence)` where confidence is the Bayesian success rate `(successes + 1) / (uses + 2)`. Ties break on id. Non-exact hits below `min_score` (default 0.35) are dropped.
+Applicability and lifecycle gate recommendations before verification votes affect their ordering. Relevance feedback suppresses the dismissed query/context and does not globally punish a useful remedy. Reviewed duplicate families occupy one result slot; original observations and votes remain separate. Different fixes sharing an error remain alternatives until a review establishes their relationship.
 
-Why this shape: the exact layer makes the common case (same error again) instant and certain; BM25 catches identifier-heavy matches embeddings blur; dense catches paraphrases; confidence lets outcomes reorder everything without touching the similarity signals.
+## Maintenance
 
-## Never learn the same thing twice
+The MCP process starts a best-effort local worker, normally every five minutes, sharing an interval lease across hosts. No new model service is required. A pass visits at most 20 records under a soft 100 ms budget checked between records, with a durable cursor. Index loading and one record's comparisons can exceed that soft limit. The queue persists across restarts. Short-lived hooks and Stop do not run maintenance; `maintenance --watch` provides a standalone foreground worker when needed.
 
-`record` looks for duplicates before inserting, in deterministic order:
+Deterministic checks detect missing fixes, temporary deployment text, version-specific advice without recent verification, failed verification reports, possible duplicate pairs, structured claim conflicts and differing merged-report candidates. Similarity produces candidates for review, never automatic factual rewrites. New records run a small bounded pass; reads expose pending review counts.
 
-1. Same whole-problem fingerprint, any identical signal in a compatible context, or the identical problem statement (normalised).
-2. Otherwise a semantic near-duplicate: cosine ≥ 0.92 and problem-token Jaccard ≥ 0.5.
+MCP instructions and nonblocking during-work context ask the host agent to inspect at most one relevant queued item when source/test evidence is available. The reviewer uses normal host tools under their existing permissions. It must treat catalogue content as untrusted and never execute a stored command on its authority alone. Semantic review is opportunistic: without an active cooperating agent, detection continues but unresolved semantic jobs remain queued.
 
-If a candidate's fix is compatible (either side empty, or fix-token Jaccard ≥ 0.4) the report is **merged**: lists are unioned under their caps with existing items kept first, the better-outcome fix wins, the fingerprint is recomputed from the merged identity fields, every index is rebuilt for the record, and `stats.merged` increments. If the fix is genuinely different the new record is **linked** to the candidate through `related`, because two different fixes for the same symptom are two different lessons.
+Reviews bind to the exact record revisions and candidate correction. Supersession requires an explicit canonical record and test/target evidence; either side of a pair can win. Consolidation additionally rejects differing applicability and conflicting claims. Original records are retained. Ambiguous claims are not resolved by popularity or recency. All changes are reviewable via `inspect` and reversible via `restore`; compare-and-swap checks reject concurrent amendments.
 
-Import uses exactly the same candidate rules. It also remembers which foreign ids it has already folded into which local records, so importing the same file twice never double-counts usage stats.
+## Persistence and portability
 
-## The learning loop
+WAL SQLite and `PRAGMA data_version` support multiple hosts. Index reload removes old entries before rebuilding. Async amendments compute embeddings first and use a guarded replacement so intervening writes are not lost. Votes update in synchronous transactions. Only derived model vectors are replaceable caches.
 
-```
-problem ──▶ recall ──▶ hit? ──yes──▶ apply fix ──▶ reinforce(worked) ──▶ confidence ──▶ ranking
-                        │
-                        no ──▶ solve ──▶ record ──▶ (merge | link | create)
-```
+JSONL exports contain votes and snapshots. Imports preserve their revision identities and deduplicate execution events; missing/invalid verification evidence is rejected. Different content under one id is a review candidate rather than a silent replacement. A stale active replica cannot reactivate superseded advice merely by reporting newer feedback. Local pending-job state is rebuilt through sweeps and does not need to travel. Import/export transfer paths remain confined to the configured transfer directory.
 
-`reinforce` is the path by which fix outcomes enter the system. A failed application with a note appends that note to the record's `avoid` list, so the next reader is warned. Nothing here needs an LLM.
+## Verification and limits
 
-`dismiss` is the path by which matching outcomes enter the system, and it is deliberately separate: a record can hold an excellent fix and still be the wrong answer for a given query. A dismissal stores the query's deterministic keys (problem key plus signal keys) in the record's `dismissed_for` list, so that exact query never surfaces the record again, and increments `stats.dismissed`, which damps the record's fuzzy scores everywhere by `1 / (1 + 0.25 · dismissed)`. Exact fingerprint matches are never damped. Dismissals travel with the record through export and import.
+`npm test` covers legacy behavior, repeat votes, concurrent hosts, revisions/restoration, evidence validation, relevance suppression, imports, maintenance persistence and MCP schemas. `npm run quality` drives the built stdio server with the real local model, verifies positive and no-answer retrieval, exercises voting/correction, and replays both Codex hook schemas plus silent Stop. It uses an isolated database and reports a small regression benchmark; it is not a claim of universal retrieval accuracy or desktop UI rendering proof.
 
-`consolidate` clusters similar episodes (union-find over cosine ≥ threshold, or token Jaccard when there is no embedder) and hands the clusters to the agent, which writes a single `kind: "rule"` record. Distillation is the one step that needs a model, so the model does it and the server stays deterministic.
-
-## Storage and portability
-
-- One SQLite file through Node's built-in `node:sqlite` (no native build step). The full record is a JSON column; fingerprint and kind are lifted out for lookups; the embedding is stored beside it, tagged with the model id, so restarts never re-run the model and a model change re-embeds only what is stale.
-- WAL mode with `PRAGMA data_version` polling: several agents can share one file at once, and each server reloads its in-memory indexes when another process commits.
-- In-memory BM25 and vector indexes rebuilt from the file at startup. Brute force is deliberate: a personal catalogue is thousands of records, not millions, and brute force is deterministic and dependency-free.
-- `transfer` exports and imports JSONL. Embeddings are not exported; the destination recomputes them with its own model. Import merges by the same rules as `record`, and on id clash the newer `updated` wins. The tool is confined to `.jsonl` files under one transfer directory, so an agent steered by injected content cannot use it for arbitrary file reads or writes. The CLI `export`/`import` commands, which a human runs, take any path.
-
-## Transport and hosting
-
-- **stdio** is the default because every MCP host speaks it: Claude Code, Claude Desktop, Cursor, Windsurf, Codex CLI, Gemini CLI, LangGraph, and anything built on an MCP client SDK.
-- `--http` starts a stateless streamable HTTP endpoint at `/mcp` for hosts that prefer a URL or for sharing one catalogue across machines. Put it behind your own auth if you expose it beyond localhost.
-
-## Trigger
-
-MCP cannot intercept a model's reasoning, so on most hosts the "check memory when you hit a problem" trigger is prompt-driven. The server ships its protocol as `instructions` (every host injects those into the model's context), as the `learned-experience://protocol` resource, and as the `solve` prompt. Hosts with rule files (CLAUDE.md, .cursorrules, AGENTS.md) get a two-line snippet in the README.
-
-In Claude Code the trigger is mechanical. One command, `learned-experience hook`, is registered for four events and dispatches on the event name:
-
-**PostToolUseFailure** (a tool call failed):
-
-1. reads the failure payload (`tool_name`, `tool_input`, `error`, `tool_response`);
-2. ignores failures the user caused (interrupts, permission denials) and failures of learned-experience's own tools, so it cannot loop;
-3. extracts up to four error-like lines as `signals`, tags the tool and the first word of a Bash command as `context`, and builds a generic `problem` line;
-4. runs `recall` in-process against the same database the MCP server uses;
-5. writes `hookSpecificOutput.additionalContext` with the hits and the instruction to `reinforce`, or a one-line nudge to `record` when nothing matches.
-
-**UserPromptSubmit** (the user sent a request): the request becomes the `problem`, any error-like lines in it become `signals`, and recall runs with a higher score floor (0.5) because a request is a weaker signal than an error string. Hits are injected before the model starts; a miss is silent, since most requests have no history. Prompts under 20 characters and slash commands are skipped.
-
-**PostToolUse** (a tool call completed): failed calls use the existing failure-recall path. After a successful call, the default-on recording reminder reads the last turn of a supported Claude Code or Codex transcript. Once work crosses the configured threshold (a failure across at least three calls, or fifteen calls), it supplies non-blocking `additionalContext`: record a verified reusable lesson before the final answer, skip trivia, and keep the answer focused on the user's request. It never emits a blocking decision and starts no additional model run. A missing/unknown transcript, a direct `record`/`reinforce` call, the plugin's own tools, or an existing Codex final response suppress the reminder. `LEARNED_EXPERIENCE_RECORD_NUDGE=0` disables it independently of recall and Stop settings.
-
-The CLI atomically claims a SHA-256 hash of the transcript path and last user boundary in SQLite metadata before emitting the reminder. Duplicate hook processes cannot both claim the same turn. Including the user boundary's line offset distinguishes repeated identical requests in one transcript. Only the hash is persisted, never the prompt or transcript text. A hook crash after claiming can lose that optional reminder, which is preferable to reopening a final answer or repeatedly nagging. These markers are local metadata and are not exported as experiences.
-
-**Stop** (the turn is ending): silent by default. The CLI returns before opening the catalogue, and the hook does not read the transcript. Optional bookkeeping must not interrupt answer delivery: in Codex, a blocking Stop response starts a continuation that can replace the substantive final answer. Only an explicit `LEARNED_EXPERIENCE_STOP_NUDGE=1` (or `stopNudge: true` for direct callers) enables the legacy reminder. When enabled, the hook reads the transcript, isolates the last turn (from the last human message), and counts tool calls, failed tool results, and calls to learned-experience's own `record`, `reinforce`, and `recall`. If nothing was recorded and the turn was eventful (at least one failure across three or more calls, or fifteen or more calls), it returns `decision: "block"` with a reason asking the model to `record` once, or `reinforce` if it applied a recalled fix, or stop if nothing is worth keeping. Claude Code sets `stop_hook_active` on the retry, and the hook returns nothing then, so it asks at most once per turn.
-
-Everything the hooks do before the lookup is deterministic string processing. They never fail loudly: any error is logged to stderr and the session continues.
-
-**Gemini CLI** uses the same shapes under different names: `AfterTool` behaves like Codex's `PostToolUse`, `BeforeAgent` like `UserPromptSubmit`. Gemini reads `additionalContext` at the top level of the hook's output, so the hook emits it both there and under `hookSpecificOutput`. Gemini has no end-of-turn event with a transcript, so the record reminder is not available there.
-
-**Setup is automated** by `learned-experience install` (`src/install.ts`). It detects hosts by their config directories or CLIs, registers the server (through `claude mcp add` and `codex mcp add` where those CLIs exist, otherwise by editing the host's JSON or TOML), merges hooks into the host's hook file without touching entries it did not write, backs up every file it changes, and is idempotent. `--dry-run` reports the plan. `uninstall` reverses it. The plugin (`plugin/`) remains the Claude Code-native alternative; the repository root carries a `marketplace.json` so `claude plugin marketplace add fitz2882/learned-experience` works.
-
-## What is deliberately not here
-
-- No LLM calls inside the server. Summarisation, generalisation, and judgment stay with the agent.
-- No cloud dependency for the core loop.
-- No free-text memory. The schema is the product; a general memory store is a different tool.
-
-## Future work
-
-- Optional secondary embedding model for reranking.
-- Hooks for other hosts as they gain hook support.
-- A WikiSkill-style compiler that turns `rule` records into SKILL.md files.
+Optional future extensions can strengthen host-attested execution identity, add artifact-drift probes within explicit read-only roots, or provide a separately configured semantic reviewer. The present implementation neither invents that evidence nor silently introduces cloud costs or production effects.

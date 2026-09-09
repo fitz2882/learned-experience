@@ -113,7 +113,7 @@ describe("runHook", () => {
     expect(text).toBe(
       "learned-experience: 1 past experience matches this failure.\n" +
         "1. [x_1] P | fix: F | avoid: A1; A2 | (confidence 0.25, score 0.61, unresolved last time)\n" +
-        "Apply the best-fitting fix first, then call learned-experience `reinforce` with its id and whether it worked. If none fit and you solve it another way, call `record` once. If a hit is clearly unrelated, call `dismiss` with its id and this problem so it stops appearing here."
+        "Check applicability first. Before trying a fix call begin_attempt with a shared execution identity, then feedback with the returned revision/attempt and checked evidence. Legacy reinforce remains available for unverified reports. If none fit and you solve it another way, call `record` once. If a hit is clearly unrelated, call `dismiss` with its id and this problem so it stops appearing here."
     );
   });
 });

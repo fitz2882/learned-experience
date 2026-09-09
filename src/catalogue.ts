@@ -11,7 +11,7 @@
 import { randomBytes } from "node:crypto";
 import type { Embedder } from "./embed/index.js";
 import { Bm25Index } from "./index/bm25.js";
-import { VectorIndex } from "./index/vector.js";
+import { dot, VectorIndex } from "./index/vector.js";
 import { clean, fingerprint, jaccard, normalizeTag, problemKey, signalKeys, tokenize, uniqueSorted } from "./normalize.js";
 import {
   Experience,
@@ -23,8 +23,26 @@ import {
   relevance,
   round,
   toRecallHit,
+  FeedbackInput,
+  type Applicability,
 } from "./schema.js";
 import { Store } from "./store.js";
+import {
+  applicabilityMatch,
+  canonicalTag,
+  cleanFeedback,
+  cleanObservation,
+  cleanScope,
+  conflictingClaims,
+  mergeCompatible,
+  contentOf,
+  digest,
+  evidenceSummary,
+  revisionOf,
+  sameScope,
+  snapshot,
+} from "./learning.js";
+import { Maintenance, type Review } from "./maintenance.js";
 
 export interface CatalogueOptions {
   /** Weight of dense similarity vs lexical when both exist. */
@@ -45,12 +63,15 @@ export interface RecallQuery {
   limit?: number;
   min_score?: number;
   kinds?: Kind[];
+  environment?: Applicability;
+  include_history?: boolean;
 }
 
 export interface RecallResult {
   hits: RecallHit[];
   searched: number;
   semantic: boolean;
+  maintenance_pending?: number;
 }
 
 export interface RecordResult {
@@ -83,12 +104,14 @@ export class Catalogue {
   private ready: Promise<void> | null = null;
   private lastDataVersion = -1;
   private embedFailure: string | null = null;
+  private readonly maintenance: Maintenance;
 
   constructor(
     private readonly store: Store,
     private readonly embedder: Embedder | null,
-    opts: CatalogueOptions = {}
+    opts: CatalogueOptions = {},
   ) {
+    this.maintenance = new Maintenance(store, opts.now ?? (() => new Date()));
     this.opts = {
       denseWeight: opts.denseWeight ?? 0.6,
       duplicateCosine: opts.duplicateCosine ?? 0.92,
@@ -109,6 +132,8 @@ export class Catalogue {
   }
 
   private async load(): Promise<void> {
+    const dataVersion = this.store.dataVersion();
+    const indexedIds = [...this.allIndexedIds()];
     this.records.clear();
     this.byFingerprint.clear();
     this.bySignal.clear();
@@ -116,7 +141,7 @@ export class Catalogue {
     const rows = this.store.all();
     const toEmbed: Experience[] = [];
     // Rebuild in-memory indexes from scratch.
-    for (const id of [...this.allIndexedIds()]) {
+    for (const id of indexedIds) {
       this.lexical.remove(id);
       this.vectors.remove(id);
     }
@@ -141,7 +166,7 @@ export class Catalogue {
         this.embedFailure = e instanceof Error ? e.message : String(e);
       }
     }
-    this.lastDataVersion = this.store.dataVersion();
+    this.lastDataVersion = dataVersion;
   }
 
   private allIndexedIds(): Iterable<string> {
@@ -192,11 +217,13 @@ export class Catalogue {
     }
   }
 
-  private persist(doc: Experience, vec: Float32Array | null): void {
+  private persist(doc: Experience, vec: Float32Array | null, expected?: Experience): void {
+    if (expected) this.store.replace(expected, doc, vec, vec ? this.embedderId : null);
+    else this.store.upsert(doc, vec, vec ? this.embedderId : null);
+    const previous = this.records.get(doc.id);
+    if (previous) this.unindexRecord(previous);
     this.indexRecord(doc);
     if (vec) this.vectors.add(doc.id, vec);
-    this.store.upsert(doc, vec, vec ? this.embedderId : null);
-    this.lastDataVersion = this.store.dataVersion();
   }
 
   // ------------------------------------------------------------------ recall
@@ -204,9 +231,9 @@ export class Catalogue {
   async recall(q: RecallQuery): Promise<RecallResult> {
     await this.sync();
     const limit = Math.max(1, Math.min(q.limit ?? 5, 25));
-    const minScore = q.min_score ?? 0.35;
+    const minScore = q.min_score ?? 0.45;
     const signals = (q.signals ?? []).map((s) => clean(s, 300));
-    const context = (q.context ?? []).map(normalizeTag).filter(Boolean);
+    const context = (q.context ?? []).map(canonicalTag).filter(Boolean);
     const problem = clean(q.problem, 240);
     const fp = fingerprint(problem, signals, context);
     const kinds = new Set(q.kinds ?? ["episode", "rule"]);
@@ -226,7 +253,11 @@ export class Catalogue {
 
     // 2. Lexical layer (BM25, normalised to the best hit for this query).
     const lexHits = this.lexical.search(lexicalQuery(problem, signals, context), 50);
-    const lexMax = lexHits[0]?.score ?? 0;
+    const queryTokens = tokenize(lexicalQuery(problem, signals, context));
+    const coverage = (id: string) => {
+      const terms = new Set(tokenize(lexicalText(this.records.get(id)!)));
+      return queryTokens.length ? queryTokens.filter((t) => terms.has(t)).length / queryTokens.length : 0;
+    };
     let denseHits: Array<{ id: string; score: number }> = [];
 
     // 3. Dense layer.
@@ -235,7 +266,7 @@ export class Catalogue {
     const wD = qv ? this.opts.denseWeight : 0;
     const wL = qv ? 1 - this.opts.denseWeight : 1;
 
-    for (const h of lexHits) if (lexMax > 0) bump(h.id, wL * (h.score / lexMax), "lexical");
+    for (const h of lexHits) bump(h.id, wL * Math.sqrt(coverage(h.id)), "lexical");
     for (const h of denseHits) if (h.score > 0) bump(h.id, wD * h.score, "semantic");
 
     const queryKeys = new Set(queryKeysFor(problem, signals));
@@ -243,15 +274,66 @@ export class Catalogue {
     for (const [id, { score, via }] of scores) {
       const doc = this.records.get(id);
       if (!doc || !kinds.has(doc.kind)) continue;
+      if (!q.include_history && doc.lifecycle === "superseded") continue;
+      const applicability = applicabilityMatch(doc.applicability, q.environment);
+      if (applicability === "mismatch") continue;
       if (doc.dismissed_for.some((k) => queryKeys.has(k))) continue; // known false positive for this query
+      if (
+        doc.votes?.some(
+          (v) =>
+            v.revision === revisionOf(doc) &&
+            v.result === "irrelevant" &&
+            v.problem &&
+            applicabilityMatch(v.environment, q.environment) === "match" &&
+            queryKeysFor(v.problem, v.signals ?? []).some((k) => queryKeys.has(k)),
+        )
+      )
+        continue;
       const exact = via.has("fingerprint");
-      const base = exact ? 1 : Math.min(score, 1) * relevance(doc.stats);
-      const final = base * (0.7 + 0.3 * confidence(doc.stats));
+      // A generic matching word is not enough; allow strong semantic paraphrases independently.
+      const dense = denseHits.find((h) => h.id === id)?.score ?? 0;
+      if (!exact && minScore >= 0.4 && coverage(id) < 0.25 && dense < 0.65) continue;
+      const base = exact ? 1 : Math.min(score, 1);
+      const evidence = evidenceSummary(doc, q.environment);
+      const reliability = evidence.confidence || 0.5;
+      const final = base * (0.85 + 0.15 * reliability);
       if (!exact && final < minScore) continue;
-      hits.push(toRecallHit(doc, { score: final, exact, via: [...via].sort() }));
+      const disputed = [...this.records.values()].some(
+        (other) => other.id !== doc.id && other.lifecycle !== "superseded" && conflictingClaims(doc, other),
+      );
+      hits.push({
+        ...toRecallHit(doc, { score: final, exact, via: [...via].sort() }),
+        confidence: round(evidence.confidence),
+        revision: revisionOf(doc),
+        evidence,
+        applicability,
+        constraints: doc.applicability,
+        preconditions: doc.preconditions ?? [],
+        lifecycle: disputed ? "disputed" : (doc.lifecycle ?? "active"),
+        recommendation:
+          doc.lifecycle === "superseded"
+            ? "historical"
+            : !doc.fix || doc.outcome !== "success"
+              ? "diagnostic-lead"
+              : disputed || doc.lifecycle === "disputed" || doc.lifecycle === "needs-review" || applicability === "unknown"
+                ? "check-before-use"
+                : "candidate-fix",
+      });
     }
     hits.sort((a, b) => b.match.score - a.match.score || (a.id < b.id ? -1 : 1));
-    return { hits: hits.slice(0, limit), searched: this.records.size, semantic: qv !== null };
+    const families = new Set<string>();
+    const diverse = hits.filter((h) => {
+      const family = this.records.get(h.id)!.family ?? h.id;
+      if (families.has(family)) return false;
+      families.add(family);
+      return true;
+    });
+    return {
+      hits: diverse.slice(0, limit),
+      searched: this.records.size,
+      semantic: qv !== null,
+      maintenance_pending: this.maintenance.queue(100000).length,
+    };
   }
 
   private exactSignalMatches(signals: string[], context: string[]): Set<string> {
@@ -290,14 +372,20 @@ export class Catalogue {
   }
 
   /** Fold `incoming` into `existing`, keeping every index consistent with the merged record. */
-  private async applyMerge(existing: Experience, incoming: ExperienceInput, now: string, stats?: Experience["stats"]): Promise<Experience> {
+  private async applyMerge(
+    existing: Experience,
+    incoming: ExperienceInput,
+    now: string,
+    stats?: Experience["stats"],
+    imported?: Experience,
+  ): Promise<Experience> {
     const merged = mergeInto(existing, incoming, now);
     if (stats) merged.stats = stats;
+    if (imported) mergeEvidence(merged, imported);
     const oldVec = this.vectors.get(existing.id) ?? null;
-    this.unindexRecord(existing); // signals/context/fingerprint may have changed
     const changed = merged.fingerprint !== existing.fingerprint || merged.problem !== existing.problem;
     const vec = changed ? ((await this.embedOne(embedText(merged))) ?? oldVec) : oldVec;
-    this.persist(merged, vec);
+    this.persist(merged, vec, existing);
     return merged;
   }
 
@@ -313,7 +401,16 @@ export class Catalogue {
     const ordered = this.duplicateCandidates(input, fp, vec);
 
     // Prefer merging into a record whose fix agrees with ours. Deterministic order.
-    const target = ordered.map((id) => this.records.get(id)!).find((e) => e.kind === input.kind && sameFix(e.fix, input.fix, this.opts.sameFixJaccard));
+    const target = ordered
+      .map((id) => this.records.get(id)!)
+      .find(
+        (e) =>
+          e.lifecycle !== "superseded" &&
+          e.kind === input.kind &&
+          mergeCompatible(e, input) &&
+          !conflictingClaims(e, input) &&
+          sameFix(e.fix, input.fix, this.opts.sameFixJaccard),
+      );
     if (target) {
       const merged = await this.applyMerge(target, input, now);
       return { id: merged.id, action: "merged", merged_into: merged.id, fingerprint: fp };
@@ -337,33 +434,143 @@ export class Catalogue {
       const r = this.records.get(rid)!;
       if (!r.related.includes(id)) this.persist({ ...r, related: [...r.related, id].sort(), updated: now }, this.vectors.get(rid) ?? null);
     }
-    return ordered.length > 0
-      ? { id, action: "linked", related: ordered, fingerprint: fp }
-      : { id, action: "created", fingerprint: fp };
+    return ordered.length > 0 ? { id, action: "linked", related: ordered, fingerprint: fp } : { id, action: "created", fingerprint: fp };
   }
 
   // --------------------------------------------------------------- reinforce
 
   async reinforce(id: string, worked: boolean, note?: string): Promise<Experience> {
     await this.sync();
-    const doc = this.records.get(id);
-    if (!doc) throw new Error(`no experience with id ${id}`);
-    const now = this.opts.now().toISOString();
-    const stats = {
-      ...doc.stats,
-      uses: doc.stats.uses + 1,
-      successes: doc.stats.successes + (worked ? 1 : 0),
-      failures: doc.stats.failures + (worked ? 0 : 1),
-      last_used: now,
-    };
-    let avoid = doc.avoid;
-    if (!worked && note) avoid = capList([...avoid, clean(note, 200)], 8);
-    const updated: Experience = { ...doc, stats, avoid, updated: now };
-    this.persist(updated, this.vectors.get(id) ?? null);
+    const updated = this.store.update(id, (doc) => {
+      const stats = {
+        ...doc.stats,
+        uses: doc.stats.uses + 1,
+        successes: doc.stats.successes + (worked ? 1 : 0),
+        failures: doc.stats.failures + (worked ? 0 : 1),
+        last_used: this.opts.now().toISOString(),
+      };
+      const avoid = !worked && note ? capList([...doc.avoid, clean(note, 200)], 8) : doc.avoid;
+      return {
+        ...doc,
+        stats,
+        avoid,
+        history:
+          digest(avoid) !== digest(doc.avoid)
+            ? [...(doc.history ?? []), snapshot(doc, "legacy-failure-note", this.opts.now().toISOString())]
+            : doc.history,
+        updated: this.opts.now().toISOString(),
+      };
+    });
+    this.lastDataVersion = -1;
+    // Legacy reported outcomes are retained, but never become verified votes.
     return updated;
   }
 
   // ----------------------------------------------------------------- dismiss
+
+  async beginAttempt(id: string, executionId: string, environment: Applicability) {
+    await this.sync();
+    const doc = this.records.get(id);
+    if (!doc) throw new Error(`no experience with id ${id}`);
+    const scope = cleanScope(environment);
+    if (doc.lifecycle === "superseded") throw new Error("lesson is superseded; recall its replacement");
+    if (applicabilityMatch(doc.applicability, scope) !== "match")
+      throw new Error("supply an environment matching every applicability constraint");
+    return {
+      id,
+      revision: revisionOf(doc),
+      attempt_id: digest(executionId),
+      environment: scope,
+      instruction:
+        "All observers of this execution must reuse this attempt_id. Report feedback only after checking the result; no outcome is inferred.",
+    };
+  }
+
+  async feedback(raw: FeedbackInput) {
+    const parsed = FeedbackInput.parse(raw);
+    const input = cleanFeedback(parsed);
+    const updated = this.store.update(input.id, (doc) => {
+      const currentRevision = revisionOf(doc);
+      const subject = currentRevision === input.revision ? doc : doc.history?.find((h) => h.revision === input.revision)?.input;
+      if (!subject) throw new Error("unknown lesson revision; reread the lesson");
+      const duplicate = doc.votes?.find((v) => v.revision === input.revision && v.attempt_id === input.attempt_id);
+      if (duplicate) {
+        const { recorded_at, ...prior } = duplicate;
+        const { id, ...incoming } = input;
+        if (digest(prior) !== digest(incoming))
+          throw new Error("attempt already has different feedback; do not count observers as new attempts");
+        return doc;
+      }
+      if (input.result.startsWith("verified-")) {
+        if (!subject.fix) throw new Error("an empty fix cannot receive a solution verification vote; use diagnostic-help");
+        if (!input.evidence || input.evidence.level === "reported")
+          throw new Error("verified feedback requires test or target-environment evidence");
+        if (applicabilityMatch(subject.applicability, input.environment) !== "match")
+          throw new Error("verification environment must match every applicability constraint");
+      }
+      if (input.evidence && Date.parse(input.evidence.observed_at) > this.opts.now().getTime() + 60000)
+        throw new Error("verification evidence is in the future");
+      if (input.result === "irrelevant" && !input.problem) throw new Error("irrelevant feedback requires the actual query");
+      const { id, ...vote } = input;
+      return {
+        ...doc,
+        votes: [...(doc.votes ?? []), { ...vote, recorded_at: this.opts.now().toISOString() }],
+        updated: this.opts.now().toISOString(),
+      };
+    });
+    this.lastDataVersion = -1;
+    return { id: updated.id, revision: input.revision, evidence: evidenceSummary(updated, input.environment) };
+  }
+
+  async maintain(limit = 20, budgetMs = 100) {
+    await this.sync();
+    const result = this.maintenance.run(limit, budgetMs, (a, b) => {
+      const x = this.vectors.get(a),
+        y = this.vectors.get(b);
+      return x && y && x.length === y.length ? dot(x, y) : 0;
+    });
+    return { ...result, jobs: this.maintenance.queue(5) };
+  }
+
+  maintenanceQueue(limit = 10, id?: string) {
+    return this.maintenance.queue(limit, id);
+  }
+
+  async resolveMaintenance(review: Review) {
+    const result = this.maintenance.resolve(review);
+    this.lastDataVersion = -1;
+    return result;
+  }
+
+  async restore(id: string, revision: string, expectedRevision: string, reason: string) {
+    await this.sync();
+    const doc = this.records.get(id);
+    if (!doc) throw new Error(`no experience with id ${id}`);
+    if (revisionOf(doc) !== expectedRevision) throw new Error("revision changed; reread before restoring");
+    const prior = [...(doc.history ?? [])].reverse().find((h) => h.revision === revision && h.reason !== "merge-report");
+    if (!prior) throw new Error("no historical revision to restore");
+    const at = this.opts.now().toISOString();
+    const next: Experience = {
+      ...doc,
+      root_cause: undefined,
+      source: undefined,
+      applicability: undefined,
+      preconditions: undefined,
+      claims: undefined,
+      observations: undefined,
+      ...prior.input,
+      fingerprint: fingerprint(prior.input.problem, prior.input.signals, prior.input.context),
+      lifecycle: prior.lifecycle,
+      superseded_by: prior.superseded_by,
+      family: prior.family,
+      history: [...(doc.history ?? []), snapshot(doc, `restore: ${clean(reason, 200)}`, at)],
+      updated: at,
+    };
+    const vec = await this.embedOne(embedText(next));
+    this.persist(next, vec, doc);
+    this.lastDataVersion = -1;
+    return next;
+  }
 
   /**
    * "This record was surfaced for a problem it does not apply to." Remembers the query so the
@@ -372,33 +579,44 @@ export class Catalogue {
    */
   async dismiss(id: string, query: { problem: string; signals?: string[] }): Promise<Experience> {
     await this.sync();
-    const doc = this.records.get(id);
-    if (!doc) throw new Error(`no experience with id ${id}`);
-    const keys = queryKeysFor(clean(query.problem, 240), (query.signals ?? []).map((s) => clean(s, 300)));
-    const dismissed_for = capList(uniqueSorted([...doc.dismissed_for, ...keys]), 40);
-    const updated: Experience = {
-      ...doc,
-      dismissed_for,
-      stats: { ...doc.stats, dismissed: doc.stats.dismissed + 1 },
-      updated: this.opts.now().toISOString(),
-    };
-    this.persist(updated, this.vectors.get(id) ?? null);
+    const keys = queryKeysFor(
+      clean(query.problem, 240),
+      (query.signals ?? []).map((s) => clean(s, 300)),
+    );
+    const updated = this.store.update(id, (doc) => {
+      if (keys.every((k) => doc.dismissed_for.includes(k))) return doc;
+      return {
+        ...doc,
+        dismissed_for: uniqueSorted([...doc.dismissed_for, ...keys]),
+        stats: { ...doc.stats, dismissed: doc.stats.dismissed + 1 },
+        updated: this.opts.now().toISOString(),
+      };
+    });
+    this.lastDataVersion = -1;
     return updated;
   }
 
   // ------------------------------------------------------------------- amend
 
-  async amend(id: string, patch: Partial<ExperienceInput>): Promise<Experience> {
+  async amend(id: string, patch: Partial<ExperienceInput>, expectedRevision?: string): Promise<Experience> {
     await this.sync();
     const doc = this.records.get(id);
     if (!doc) throw new Error(`no experience with id ${id}`);
+    if (expectedRevision && revisionOf(doc) !== expectedRevision) throw new Error("revision changed; reread before amending");
     const merged = sanitize(ExperienceInput.parse({ ...stripDerived(doc), ...patch }));
     const now = this.opts.now().toISOString();
     const fp = fingerprint(merged.problem, merged.signals, merged.context);
-    const updated: Experience = { ...doc, ...merged, fingerprint: fp, updated: now };
-    this.unindexRecord(doc);
-    const vec = fp !== doc.fingerprint || merged.problem !== doc.problem ? await this.embedOne(embedText(updated)) : (this.vectors.get(id) ?? null);
-    this.persist(updated, vec);
+    const updated: Experience = {
+      ...doc,
+      ...merged,
+      fingerprint: fp,
+      updated: now,
+      history: [...(doc.history ?? []), snapshot(doc, "amend", now)],
+      family: revisionOf(doc) !== revisionOf(merged) ? undefined : doc.family,
+    };
+    const vec =
+      fp !== doc.fingerprint || merged.problem !== doc.problem ? await this.embedOne(embedText(updated)) : (this.vectors.get(id) ?? null);
+    this.persist(updated, vec, doc);
     return updated;
   }
 
@@ -427,7 +645,10 @@ export class Catalogue {
    */
   async consolidate(threshold = 0.8, minSize = 3): Promise<Cluster[]> {
     await this.sync();
-    const episodes = [...this.records.values()].filter((r) => r.kind === "episode").map((r) => r.id).sort();
+    const episodes = [...this.records.values()]
+      .filter((r) => r.kind === "episode")
+      .map((r) => r.id)
+      .sort();
     const parent = new Map<string, string>(episodes.map((id) => [id, id]));
     const find = (x: string): string => {
       while (parent.get(x) !== x) {
@@ -460,7 +681,10 @@ export class Catalogue {
       const docs = ids.map((id) => this.records.get(id)!);
       const ctxCounts = new Map<string, number>();
       for (const d of docs) for (const c of d.context) ctxCounts.set(c, (ctxCounts.get(c) ?? 0) + 1);
-      const shared = [...ctxCounts.entries()].filter(([, n]) => n === docs.length).map(([c]) => c).sort();
+      const shared = [...ctxCounts.entries()]
+        .filter(([, n]) => n === docs.length)
+        .map(([c]) => c)
+        .sort();
       clusters.push({ ids: ids.sort(), problems: docs.map((d) => d.problem), shared_context: shared, size: ids.length });
     }
     clusters.sort((a, b) => b.size - a.size || (a.ids[0] < b.ids[0] ? -1 : 1));
@@ -478,6 +702,10 @@ export class Catalogue {
     let successes = 0;
     let merged = 0;
     let dismissed = 0;
+    let verifiedSuccesses = 0,
+      verifiedFailures = 0,
+      diagnosticHelps = 0,
+      withVerification = 0;
     const ctx = new Map<string, number>();
     for (const r of all) {
       byOutcome[r.outcome]++;
@@ -486,6 +714,11 @@ export class Catalogue {
       successes += r.stats.successes;
       merged += r.stats.merged;
       dismissed += r.stats.dismissed;
+      const evidence = evidenceSummary(r);
+      verifiedSuccesses += evidence.successes;
+      verifiedFailures += evidence.failures;
+      diagnosticHelps += evidence.diagnostic_helps;
+      if (evidence.successes + evidence.failures) withVerification++;
       for (const c of r.context) ctx.set(c, (ctx.get(c) ?? 0) + 1);
     }
     const topContext = [...ctx.entries()]
@@ -501,6 +734,13 @@ export class Catalogue {
       success_rate: uses > 0 ? round(successes / uses) : null,
       duplicates_prevented: merged,
       false_positives_dismissed: dismissed,
+      verified_successes: verifiedSuccesses,
+      verified_failures: verifiedFailures,
+      diagnostic_helps: diagnosticHelps,
+      records_with_verification: withVerification,
+      verification_coverage: all.length ? round(withVerification / all.length) : 0,
+      verification_basis: "agent-reported tests; historical reinforce counts are not verified votes",
+      maintenance_pending: this.maintenance.queue(100000).length,
       embedded: this.vectors.size,
       embedding_model: this.embedderId,
       embedding_error: this.embedFailure,
@@ -521,7 +761,7 @@ export class Catalogue {
 
   /**
    * Import records, idempotently.
-   *   Same id already here: keep whichever was updated more recently.
+   *   Same id already here: union evidence, preserve competing content as review candidates.
    *   Already merged into a local record on a previous import: skip (or refresh content if newer),
    *     never re-add its stats.
    *   Duplicate by the same rules `record` uses: merge, summing stats once.
@@ -535,6 +775,28 @@ export class Catalogue {
       let doc: Experience;
       try {
         doc = Experience.parse(JSON.parse(lines[i]));
+        const cleanInput = sanitize(contentOf(doc));
+        const history = doc.history?.map((h) => ({ ...h, input: sanitize(h.input), reason: clean(h.reason, 200) }));
+        const votes = doc.votes?.map((v) => ({
+          ...v,
+          environment: cleanScope(v.environment),
+          problem: v.problem ? clean(v.problem, 240) : undefined,
+          signals: v.signals?.map((s) => clean(s, 300)),
+          evidence: v.evidence ? cleanObservation(v.evidence) : undefined,
+        }));
+        doc = {
+          ...doc,
+          ...cleanInput,
+          history,
+          votes,
+          reviews: doc.reviews?.map((r) => ({ ...r, evidence: cleanObservation(r.evidence) })),
+        };
+        for (const v of doc.votes ?? []) {
+          const subject = v.revision === revisionOf(doc) ? doc : doc.history?.find((h) => h.revision === v.revision)?.input;
+          if (!subject) throw new Error("imported vote references an unknown revision");
+          if (v.result.startsWith("verified-") && (!subject.fix || applicabilityMatch(subject.applicability, v.environment) !== "match"))
+            throw new Error("invalid imported verification scope or empty fix");
+        }
       } catch (e) {
         out.errors.push(`line ${i + 1}: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`);
         continue;
@@ -542,13 +804,34 @@ export class Catalogue {
       const now = this.opts.now().toISOString();
       const existing = this.records.get(doc.id);
       if (existing) {
-        if (existing.updated >= doc.updated) {
+        if (digest(existing) === digest(doc)) {
+          out.skipped++;
+          continue;
+        }
+        // Different content is a candidate, not a last-writer-wins correction.
+        const changedContent = revisionOf(existing) !== revisionOf(doc);
+        let next = changedContent || existing.updated >= doc.updated ? { ...existing } : { ...doc };
+        const other = next.updated === existing.updated && digest(contentOf(next)) === digest(contentOf(existing)) ? doc : existing;
+        const superseded = existing.lifecycle === "superseded" ? existing : doc.lifecycle === "superseded" ? doc : null;
+        if (superseded) {
+          const active = superseded === existing ? doc : existing;
+          const restored = active.history?.some(
+            (h) => h.reason.startsWith("restore:") && h.lifecycle === "superseded" && h.superseded_by === superseded.superseded_by,
+          );
+          if (!restored) next = { ...next, lifecycle: "superseded", superseded_by: superseded.superseded_by };
+        }
+        mergeEvidence(next, other);
+        if (changedContent && !next.history?.some((h) => h.reason === "merge-report" && h.revision === revisionOf(doc)))
+          next.history = [
+            ...(next.history ?? []),
+            { revision: revisionOf(doc), input: contentOf(doc), at: doc.updated, reason: "merge-report" },
+          ];
+        if (digest(next) === digest(existing)) {
           out.skipped++;
           continue;
         }
         const oldVec = this.vectors.get(existing.id) ?? null;
-        this.unindexRecord(existing);
-        this.persist(doc, (await this.embedOne(embedText(doc))) ?? oldVec);
+        this.persist(next, (await this.embedOne(embedText(next))) ?? oldVec, existing);
         out.updated++;
         continue;
       }
@@ -563,7 +846,7 @@ export class Catalogue {
           out.skipped++;
           continue;
         }
-        await this.applyMerge(target, stripDerived(doc), now, { ...target.stats, merged: target.stats.merged });
+        await this.applyMerge(target, stripDerived(doc), now, { ...target.stats, merged: target.stats.merged }, doc);
         this.store.setMeta(priorKey, JSON.stringify({ target: targetId, updated: doc.updated }));
         out.updated++;
         continue;
@@ -573,16 +856,29 @@ export class Catalogue {
       const vec = await this.embedOne(embedText(doc));
       const target = this.duplicateCandidates(input, doc.fingerprint, vec)
         .map((id) => this.records.get(id)!)
-        .find((r) => r.kind === doc.kind && sameFix(r.fix, doc.fix, this.opts.sameFixJaccard));
+        .find(
+          (r) =>
+            r.lifecycle !== "superseded" &&
+            r.kind === doc.kind &&
+            mergeCompatible(r, doc) &&
+            !conflictingClaims(r, doc) &&
+            sameFix(r.fix, doc.fix, this.opts.sameFixJaccard),
+        );
       if (target) {
-        await this.applyMerge(target, input, now, {
-          uses: target.stats.uses + doc.stats.uses,
-          successes: target.stats.successes + doc.stats.successes,
-          failures: target.stats.failures + doc.stats.failures,
-          merged: target.stats.merged + doc.stats.merged + 1,
-          dismissed: target.stats.dismissed + doc.stats.dismissed,
-          last_used: [target.stats.last_used, doc.stats.last_used].filter(Boolean).sort().pop() ?? null,
-        });
+        await this.applyMerge(
+          target,
+          input,
+          now,
+          {
+            uses: target.stats.uses + doc.stats.uses,
+            successes: target.stats.successes + doc.stats.successes,
+            failures: target.stats.failures + doc.stats.failures,
+            merged: target.stats.merged + doc.stats.merged + 1,
+            dismissed: target.stats.dismissed + doc.stats.dismissed,
+            last_used: [target.stats.last_used, doc.stats.last_used].filter(Boolean).sort().pop() ?? null,
+          },
+          doc,
+        );
         this.store.setMeta(priorKey, JSON.stringify({ target: target.id, updated: doc.updated }));
         out.merged++;
         continue;
@@ -632,12 +928,16 @@ function sanitize(input: ExperienceInput): ExperienceInput {
     avoid: capList([...new Set(input.avoid.map((a) => clean(a, 200)).filter(Boolean))], 8),
     root_cause: input.root_cause ? clean(input.root_cause, 300) : undefined,
     source: input.source,
+    applicability: input.applicability ? cleanScope(input.applicability) : undefined,
+    preconditions: input.preconditions?.map((s) => clean(s, 200)),
+    claims: input.claims?.map((c) => ({ key: clean(c.key, 100), value: clean(c.value, 200) })),
+    observations: input.observations?.map(cleanObservation),
   };
 }
 
 function stripDerived(doc: Experience): ExperienceInput {
   const { id: _i, v: _v, fingerprint: _f, related: _r, dismissed_for: _d, stats: _s, created: _c, updated: _u, ...input } = doc;
-  return input;
+  return ExperienceInput.parse(input);
 }
 
 function sameFix(a: string, b: string, threshold: number): boolean {
@@ -676,5 +976,44 @@ function mergeInto(existing: Experience, incoming: ExperienceInput, now: string)
     source: existing.source ?? incoming.source,
     stats: { ...existing.stats, merged: existing.stats.merged + 1 },
     updated: now,
+    history: uniqueHistory([
+      ...(existing.history ?? []),
+      snapshot(existing, "before-merge", now),
+      { revision: revisionOf(incoming), input: incoming, at: now, reason: "merge-report" },
+    ]),
+    observations:
+      existing.observations || incoming.observations
+        ? [...(existing.observations ?? []), ...(incoming.observations ?? [])].slice(-30)
+        : undefined,
   };
+}
+
+/** Union verification events, never add counters for the same execution. */
+function mergeEvidence(target: Experience, source: Experience): void {
+  const votes = new Map((target.votes ?? []).map((v) => [`${v.revision}:${v.attempt_id}`, v]));
+  for (const vote of source.votes ?? []) {
+    const key = `${vote.revision}:${vote.attempt_id}`;
+    const previous = votes.get(key);
+    if (previous) {
+      const { recorded_at: a, ...x } = previous;
+      const { recorded_at: b, ...y } = vote;
+      if (digest(x) !== digest(y)) throw new Error("conflicting feedback for the same execution identity");
+    } else votes.set(key, vote);
+  }
+  if (votes.size) target.votes = [...votes.values()];
+  const histories = [...(target.history ?? []), ...(source.history ?? [])];
+  if (revisionOf(target) !== revisionOf(source)) histories.push(snapshot(source, "import-source", source.updated));
+  if (histories.length) target.history = [...new Map(histories.map((h) => [digest(h), h])).values()];
+  const reviews = [...(target.reviews ?? []), ...(source.reviews ?? [])];
+  if (reviews.length) target.reviews = [...new Map(reviews.map((r) => [digest(r), r])).values()];
+}
+
+function uniqueHistory(history: NonNullable<Experience["history"]>): NonNullable<Experience["history"]> {
+  const unique = new Map<string, (typeof history)[number]>();
+  for (const item of history) {
+    const { at, ...content } = item;
+    const key = digest(content);
+    if (!unique.has(key)) unique.set(key, item);
+  }
+  return [...unique.values()];
 }

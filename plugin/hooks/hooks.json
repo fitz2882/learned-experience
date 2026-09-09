@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx -y learned-experience hook",
+            "command": "npx -y learned-experience@0.4.0 hook",
             "timeout": 30
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx -y learned-experience hook",
+            "command": "npx -y learned-experience@0.4.0 hook",
             "timeout": 20
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx -y learned-experience hook",
+            "command": "npx -y learned-experience@0.4.0 hook",
             "timeout": 20
           }
         ]
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx -y learned-experience hook",
+            "command": "npx -y learned-experience@0.4.0 hook",
             "timeout": 30
           }
         ]
