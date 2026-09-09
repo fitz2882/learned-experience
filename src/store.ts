@@ -39,6 +39,9 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS idx_experiences_fingerprint ON experiences(fingerprint);
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS maintenance (
+        key TEXT PRIMARY KEY, doc TEXT NOT NULL
+      );
     `);
     this.setMeta("schema_version", "1");
   }
@@ -50,9 +53,11 @@ export class Store {
   }
 
   all(): StoredRow[] {
-    const rows = this.db
-      .prepare("SELECT doc, embedding, embed_model FROM experiences ORDER BY id")
-      .all() as Array<{ doc: string; embedding: Uint8Array | null; embed_model: string | null }>;
+    const rows = this.db.prepare("SELECT doc, embedding, embed_model FROM experiences ORDER BY id").all() as Array<{
+      doc: string;
+      embedding: Uint8Array | null;
+      embed_model: string | null;
+    }>;
     return rows.map((r) => ({
       doc: Experience.parse(JSON.parse(r.doc)),
       embedding: r.embedding ? toFloat32(r.embedding) : null,
@@ -62,8 +67,7 @@ export class Store {
 
   get(id: string): StoredRow | null {
     const r = this.db.prepare("SELECT doc, embedding, embed_model FROM experiences WHERE id = ?").get(id) as
-      | { doc: string; embedding: Uint8Array | null; embed_model: string | null }
-      | undefined;
+      { doc: string; embedding: Uint8Array | null; embed_model: string | null } | undefined;
     if (!r) return null;
     return {
       doc: Experience.parse(JSON.parse(r.doc)),
@@ -83,7 +87,7 @@ export class Store {
            doc         = excluded.doc,
            embedding   = excluded.embedding,
            embed_model = excluded.embed_model,
-           updated     = excluded.updated`
+           updated     = excluded.updated`,
       )
       .run(
         doc.id,
@@ -93,8 +97,37 @@ export class Store {
         embedding ? toBuffer(embedding) : null,
         embedModel,
         doc.created,
-        doc.updated
+        doc.updated,
       );
+  }
+
+  /** Read/check/write under the SQLite writer lock, shared by every host process. */
+  update(id: string, change: (current: Experience) => Experience): Experience {
+    return this.transaction(() => {
+      const current = this.get(id);
+      if (!current) throw new Error(`no experience with id ${id}`);
+      const next = change(current.doc);
+      this.upsert(next, current.embedding, current.embedModel);
+      return next;
+    });
+  }
+
+  replace(expected: Experience, next: Experience, embedding: Float32Array | null, model: string | null): void {
+    this.transaction(() => {
+      if (JSON.stringify(this.get(expected.id)?.doc) !== JSON.stringify(Experience.parse(expected)))
+        throw new Error("experience changed concurrently; reread and retry");
+      this.upsert(next, embedding, model);
+    });
+  }
+
+  putJob(key: string, doc: unknown): void {
+    this.db.prepare("INSERT INTO maintenance(key,doc) VALUES (?,?) ON CONFLICT(key) DO NOTHING").run(key, JSON.stringify(doc));
+  }
+  jobs<T>(): T[] {
+    return (this.db.prepare("SELECT doc FROM maintenance ORDER BY key").all() as { doc: string }[]).map((r) => JSON.parse(r.doc));
+  }
+  finishJob(key: string): void {
+    this.db.prepare("DELETE FROM maintenance WHERE key=?").run(key);
   }
 
   setEmbedding(id: string, embedding: Float32Array, embedModel: string): void {
@@ -122,12 +155,11 @@ export class Store {
 
   /** Atomic across hook processes; only hashes are stored, never prompts or transcript content. */
   claimHookReminder(key: string): boolean {
-    return this.db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)")
-      .run(`hook-reminder:${key}`, "sent").changes > 0;
+    return this.db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)").run(`hook-reminder:${key}`, "sent").changes > 0;
   }
 
   transaction<T>(fn: () => T): T {
-    this.db.exec("BEGIN");
+    this.db.exec("BEGIN IMMEDIATE");
     try {
       const out = fn();
       this.db.exec("COMMIT");

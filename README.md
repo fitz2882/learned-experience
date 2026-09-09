@@ -7,7 +7,7 @@
 - **Automatic in Claude Code, Codex, and Gemini CLI**: hooks make recall and recording happen without the model having to remember.
 - **Your data, in one file**: a SQLite database you own, plus a small embedding model that runs on your machine. No account, no API key, nothing sent anywhere. Sync the file, export it, or serve it over HTTP to carry it between machines.
 - **Deterministic where it matters**: exact error fingerprints, lexical search, fixed-weight fusion, Bayesian confidence.
-- **Self-improving**: outcomes feed back into ranking, and duplicates are merged instead of stored twice.
+- **Evidence-based ranking**: independent verification reports improve ranking for the exact lesson revision; diagnostics and legacy feedback stay separate.
 - **Portable**: JSONL export and import, with secrets redacted and paths made machine-independent.
 
 ## Quick start
@@ -44,7 +44,7 @@ codex plugin marketplace add fitz2882/learned-experience
 codex plugin add learned-experience
 ```
 
-Both plugin systems check the marketplace for new versions in the background and pick up a release when its version number changes. To force it: `claude plugin update learned-experience` or `codex plugin marketplace upgrade`.
+The marketplace plugins pin their server and hook commands to the matching npm release. To update Claude Code, run `claude plugin marketplace update learned-experience` followed by `claude plugin update learned-experience@learned-experience`. For Codex, run `codex plugin marketplace upgrade learned-experience` followed by `codex plugin add learned-experience@learned-experience`. Restart existing host sessions after updating.
 
 **One catalogue for all of them.** Every host launches the same server, and the server reads the same database, so a lesson recorded in Codex is recalled in Claude Code, Gemini, Cursor, or OpenClaw, and vice versa.
 
@@ -63,7 +63,7 @@ Both plugin systems check the marketplace for new versions in the background and
 
 ## What is universal and what is per host
 
-The MCP server, its eight tools, the record format, the search, and the database are the same on every host and with every model. Nothing in them knows which agent is calling. That is the part that makes the catalogue portable across providers.
+The MCP server, its tools, the record format, the search, and the database are the same on every host and with every model. Nothing in them knows which agent is calling. That is the part that makes the catalogue portable across providers.
 
 Hooks are not part of MCP. Each host decides whether it has hooks, which events exist, and what the payloads look like. Claude Code has a dedicated tool-failure event. Codex and Gemini CLI only have a general after-tool event, so the hook checks the response for signs of failure itself. OpenClaw's hooks are in-process TypeScript plugins rather than shell commands. Cursor, Windsurf, and Claude Desktop have no hooks at all. The single `learned-experience hook` command understands every dialect it has been taught (Claude Code, Codex, Gemini CLI), and hosts without hooks fall back to the protocol the server sends as MCP instructions, which every host injects into the model's context.
 
@@ -80,15 +80,15 @@ Every record is a compact, standardised lesson:
 | `avoid` | What did not work, or made it worse |
 | `root_cause` | Why it happened, if known |
 | `outcome` | `success`, `partial`, or `failure`. Dead ends are worth recording too. |
-| `confidence` | Derived from real outcomes: `(successes + 1) / (uses + 2)` |
+| `confidence` | Smoothed rate from matching, revision-bound verification reports; not an external attestation |
 
 The loop the agent runs:
 
 1. **Recall** before working. Exact signal matches are found without any model. Similar problems are found by combining local embeddings with lexical search.
 2. **Apply** the best fix, respecting the avoid-list.
-3. **Reinforce**: report whether it worked. This is what makes ranking improve over time.
+3. **Verify**: call `begin_attempt` before trying a fix, then `feedback` with a checked result, environment and evidence. Repeated observers of one execution count once. Legacy `reinforce` remains supported as unverified feedback.
 4. **Record** anything non-trivial once solved. Duplicates are merged automatically, and the same symptom with a different fix is linked rather than duplicated.
-5. **Dismiss** a hit that did not apply. The record is never recalled for that query again, and its fuzzy matches are damped everywhere, so false positives fade instead of repeating.
+5. **Dismiss** a hit that did not apply, or report `irrelevant` feedback with its query and environment. This affects matching for that context; it does not downvote a fix you never tried.
 
 It learns from anything the agent records, not just tool errors: tricky refactors, surprising library behaviour, build configuration, design choices that turned out badly.
 
@@ -149,15 +149,46 @@ After applying a recalled fix, call `reinforce` with the result. After solving s
 |---|---|
 | `recall` | Has this problem, or a similar one, been solved before? Returns ranked hits with fix, avoid-list, and confidence. |
 | `record` | Store a lesson. Merges or links duplicates automatically. |
-| `reinforce` | Report whether a recalled fix worked. Failure notes go on the avoid-list. |
+| `begin_attempt` | Bind a planned application to a revision, execution identity and environment. |
+| `feedback` | Report verified success/failure, diagnostic help, relevance, or uncertainty. |
+| `reinforce` | Legacy reported outcome; does not create verified votes. |
 | `dismiss` | Report that a recalled record did not apply to the problem. Suppresses it for that query and damps its fuzzy matches. |
 | `amend` | Patch fields of an existing record. |
 | `forget` | Delete a record. |
 | `consolidate` | Cluster similar episodes so the agent can write one generalised `rule`. |
-| `stats` | Counts, success rate, duplicates prevented, embedding status. |
+| `inspect` | Full lesson, current revision, evidence, votes and prior snapshots. |
+| `maintenance` | Run bounded checks, inspect the durable queue, or resolve an item with evidence. |
+| `restore` | Restore historical content/state with a revision guard and audit trail. |
+| `stats` | Legacy counters, verification coverage, checked outcomes, queue size and embedding health. |
 | `transfer` | Export or import JSONL. |
 
 Resource `learned-experience://protocol` and prompt `solve` carry the same protocol text the server sends as instructions.
+
+## Verification votes and ongoing maintenance (0.4)
+
+A vote means an agent applied a particular revision and checked the result. `begin_attempt` takes a stable `execution_id` from the actual run/test; all observers of that same execution must reuse it. Pass its returned `id`, `revision`, `attempt_id` and `environment` to `feedback`, with one of:
+
+- `verified-success` or `verified-failure`: requires a nonempty fix, all applicability constraints matched, and evidence `{summary, reference, observed_at, level}`. `level` must be `local-test` or `target-environment`.
+- `diagnostic-help`, `relevant`, `irrelevant` or `unverified`: never increments solution verification counts. Irrelevant feedback requires the actual query.
+
+The server deduplicates execution identities atomically across hosts. It does not attest that a model told the truth or that two invented identities represent independent runs. Host agents must use genuine run identities and evidence. Agreement alone is not a vote. A changed remedy, scope or precondition changes the revision; old votes stay in history and cannot boost the new version. Empty/partial fixes are returned as diagnostic leads regardless of old positive feedback.
+
+Use optional `applicability` for exact `product`, `version`, `platform` and `project` constraints, and `preconditions` for checks the agent must perform. Versions are exact strings, not semver ranges. Tags remain search hints. Missing applicability information is shown as unknown; explicit mismatches are excluded even for an exact error match. Put temporary deployment status in dated `observations`. Optional `claims: [{key, value}]` makes conflicting scoped facts mechanically detectable.
+
+The running MCP server starts a local maintenance sweep on startup and every five minutes. Multiple hosts share an interval lease. Each pass visits at most 20 records with a 100 ms soft processing budget; it uses a persisted cursor and queue. No new infrastructure, network model calls or commands from lessons are used. `record` also runs a small bounded pass. Short-lived hooks never start the worker, and Stop stays silent.
+
+Checks queue incomplete fixes, temporary status, unverified version-specific advice, failed verifications, possible duplicate pairs, explicit conflicting claims and corrections embedded in merged reports. Queue entries are revision-bound. A semantic resemblance creates a review candidate, not permission to merge. The host agent is instructed to handle at most one relevant review during normal work when it has evidence; uncertain items remain pending. Thus detection is automatic, while semantic correction depends on an active, cooperating agent with source/test access. The server does not pretend a queue alone proves correctness.
+
+`maintenance(mode="resolve")` accepts checked evidence. `supersede` and `consolidate` take an optional `winner_id` selecting either record in a pair (default: `related_id`). Superseded records disappear from ordinary recommendations; reviewed duplicates share one result slot without deleting observations or combining votes. `accept-candidate` applies the exact queued correction. Inspect its history first. `dismiss` closes an inapplicable review item. Use `amend` with `expected_revision` to make other evidence-backed corrections, or `restore` to undo them. Stored text is untrusted data; reviewers must not execute commands merely because a lesson suggests them.
+
+For maintenance while no MCP host is running:
+
+```bash
+learned-experience maintenance          # one bounded sweep and queue report
+learned-experience maintenance --watch  # foreground worker, five-minute interval
+```
+
+**Upgrading:** back up the SQLite database (or export it) and upgrade all writers together. Existing v1 records load without fabricated votes or verification. Legacy `reinforce` calls and counters remain available, but recall reliability now uses verification reports. Votes and history travel in JSONL. Different imported content becomes a review candidate; independent votes are unioned by identity. Older binaries do not understand these extensions and must not write to an upgraded catalogue. `npm`/marketplace publication and host restart are separate from building this checkout.
 
 ## Command line
 
@@ -199,6 +230,7 @@ All optional.
 | `LEARNED_EXPERIENCE_EMBED_MODEL` | per provider | `Xenova/all-MiniLM-L6-v2`, `text-embedding-3-small`, `nomic-embed-text` |
 | `LEARNED_EXPERIENCE_EMBED_BASE_URL` | per provider | Any OpenAI-compatible endpoint, or the Ollama base URL |
 | `LEARNED_EXPERIENCE_EMBED_API_KEY` | `$OPENAI_API_KEY` | Key for remote providers |
+| `LEARNED_EXPERIENCE_MAINTENANCE` | `1` | `0`: disable the automatic local maintenance timer; explicit maintenance tools still work |
 | `LEARNED_EXPERIENCE_HOOK_QUIET` | unset | `1`: no reminder after a failure that matches nothing |
 | `LEARNED_EXPERIENCE_RECORD_NUDGE` | `1` | `0`: disable the non-blocking recording reminder during work |
 | `LEARNED_EXPERIENCE_RECORD_MIN_FAILURES` | `1` | Failures needed for the during-work reminder |
@@ -221,6 +253,7 @@ Records are meant to travel, so every string is cleaned on write: API keys, toke
 npm install
 npm test          # vitest, in-memory database, deterministic fake embedder
 npm run typecheck
+npm run quality   # real-model MCP voting, correction, abstention and hook replay in an isolated database
 npm run smoke     # builds, then drives the real server over stdio with the real local model
 ```
 

@@ -20,17 +20,19 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { configFromEnv, openCatalogue } from "./config.js";
 import { hookOptionsFromEnv, readStdin, runHook } from "./hook.js";
 import { buildServer } from "./server.js";
+import { startMaintenanceWorker } from "./worker.js";
 
 function log(msg: string): void {
   process.stderr.write(`[learned-experience] ${msg}\n`);
 }
 
-type Command = "export" | "import" | "hook" | "recall" | "stats" | "install" | "uninstall";
+type Command = "maintenance" | "export" | "import" | "hook" | "recall" | "stats" | "install" | "uninstall";
 
 const USAGE =
   "usage: learned-experience [--http [--port N] [--host H]]\n" +
   "       learned-experience install [host ...] [--dry-run] [--local]   register server + hooks with detected agent hosts\n" +
   "       learned-experience uninstall [host ...] [--dry-run]\n" +
+  "       learned-experience maintenance [--watch]\n" +
   "       learned-experience hook [--codex] | recall <text> | stats | export <file> | import <file>\n" +
   `hosts: ${ALL_HOSTS.join(", ")}\n`;
 
@@ -46,6 +48,7 @@ function parseArgs(argv: string[]) {
     dryRun: false,
     local: false,
     codex: false,
+    watch: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -54,8 +57,9 @@ function parseArgs(argv: string[]) {
     else if (a === "--host") args.host = argv[++i];
     else if (a === "--dry-run") args.dryRun = true;
     else if (a === "--local") args.local = true;
+    else if (a === "--watch") args.watch = true;
     else if (a === "--codex") args.codex = true;
-    else if (a === "hook" || a === "stats" || a === "install" || a === "uninstall") args.command = a;
+    else if (a === "maintenance" || a === "hook" || a === "stats" || a === "install" || a === "uninstall") args.command = a;
     else if (a === "recall") {
       args.command = a;
       args.text = argv.slice(i + 1).join(" ");
@@ -79,7 +83,13 @@ async function main(): Promise<void> {
   if (args.command === "install" || args.command === "uninstall") {
     const uninstall = args.command === "uninstall";
     const launch = args.local ? { command: process.execPath, args: [fileURLToPath(new URL("./index.js", import.meta.url))] } : undefined;
-    const reports = installHosts({ home: homedir(), hosts: args.hosts.length ? args.hosts : undefined, dryRun: args.dryRun, uninstall, launch });
+    const reports = installHosts({
+      home: homedir(),
+      hosts: args.hosts.length ? args.hosts : undefined,
+      dryRun: args.dryRun,
+      uninstall,
+      launch,
+    });
     process.stdout.write(formatReport(reports, args.dryRun, uninstall));
     return;
   }
@@ -103,9 +113,21 @@ async function main(): Promise<void> {
 
   const { store, catalogue, embedderId } = await openCatalogue(cfg);
 
+  if (args.command === "maintenance") {
+    const result = await catalogue.maintain(100, 250);
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    if (args.watch)
+      startMaintenanceWorker(catalogue, store, { keepAlive: true, onError: (e) => log(`maintenance deferred: ${String(e)}`) });
+    else store.close();
+    return;
+  }
+
   if (args.command === "recall") {
     if (!args.text.trim()) throw new Error("recall needs some text");
-    const lines = args.text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const lines = args.text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
     const res = await catalogue.recall({ problem: lines[0].slice(0, 240), signals: lines.slice(1, 9) });
     process.stdout.write(JSON.stringify(res, null, 2) + "\n");
     store.close();
@@ -136,9 +158,13 @@ async function main(): Promise<void> {
   // Warm the indexes (and the local model) in the background so the first recall is fast.
   catalogue.init().then(
     () => log(`ready: ${store.count()} records, embeddings=${embedderId ?? "none"}, db=${cfg.dbPath}`),
-    (e) => log(`init failed: ${e instanceof Error ? e.message : String(e)}`)
+    (e) => log(`init failed: ${e instanceof Error ? e.message : String(e)}`),
   );
 
+  if (process.env.LEARNED_EXPERIENCE_MAINTENANCE !== "0")
+    startMaintenanceWorker(catalogue, store, {
+      onError: (e) => log(`maintenance deferred: ${e instanceof Error ? e.message : String(e)}`),
+    });
   const serverOptions = { transferDir: cfg.transferDir };
 
   if (args.http) {

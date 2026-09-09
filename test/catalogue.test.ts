@@ -176,7 +176,7 @@ describe("never learn the same thing twice", () => {
 });
 
 describe("reinforce (learning loop)", () => {
-  it("raises confidence on success and lowers it on failure, and ranks accordingly", async () => {
+  it("preserves legacy counts without presenting them as verified reliability", async () => {
     const { cat } = make();
     const good = await cat.record(pgDown);
     const bad = await cat.record({ ...pgDown, fix: "Reinstall Postgres from scratch", avoid: [] });
@@ -190,9 +190,8 @@ describe("reinforce (learning loop)", () => {
     expect(b.stats).toMatchObject({ uses: 1, successes: 0, failures: 1 });
     expect(b.avoid).toContain("reinstall wiped data and did not help");
     const res = await cat.recall({ problem: "db down", signals: pgDown.signals, context: pgDown.context });
-    expect(res.hits.map((h) => h.id)).toEqual([good.id, bad.id]);
-    expect(res.hits[0].confidence).toBeCloseTo(0.75);
-    expect(res.hits[1].confidence).toBeCloseTo(1 / 3);
+    expect(res.hits.map((h) => h.id).sort()).toEqual([good.id, bad.id].sort());
+    expect(res.hits.every(h => h.confidence === 0.5 && h.evidence?.successes === 0)).toBe(true);
   });
 
   it("rejects unknown ids", async () => {

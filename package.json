@@ -1,6 +1,6 @@
 {
   "name": "learned-experience",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "Model-agnostic MCP server that gives any AI agent a persistent, self-improving catalogue of solved problems. Recall past fixes, record new ones, never learn the same thing twice.",
   "type": "module",
   "license": "MIT",
@@ -23,7 +23,8 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "npm run build",
-    "smoke": "npm run build && node scripts/smoke.mjs dist/index.js .learned-experience"
+    "smoke": "npm run build && node scripts/smoke.mjs dist/index.js .learned-experience",
+    "quality": "npm run build && node scripts/quality.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

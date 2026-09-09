@@ -34,7 +34,22 @@ describe("MCP surface", () => {
     const { client } = await connect();
     expect(client.getInstructions()).toBe(PROTOCOL);
     const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-    expect(tools).toEqual(["amend", "consolidate", "dismiss", "forget", "recall", "record", "reinforce", "stats", "transfer"]);
+    expect(tools).toEqual([
+      "amend",
+      "begin_attempt",
+      "consolidate",
+      "dismiss",
+      "feedback",
+      "forget",
+      "inspect",
+      "maintenance",
+      "recall",
+      "record",
+      "reinforce",
+      "restore",
+      "stats",
+      "transfer",
+    ]);
     const recall = (await client.listTools()).tools.find((t) => t.name === "recall")!;
     expect(recall.annotations?.readOnlyHint).toBe(true);
     expect((await client.listResources()).resources.map((r) => r.uri)).toEqual(["learned-experience://protocol"]);
@@ -96,7 +111,12 @@ describe("MCP surface", () => {
     const { join } = await import("node:path");
     const dir = mkdtempSync(join(tmpdir(), "exp-transfer-"));
     const { call } = await connect(dir);
-    await call("record", { problem: "Xcode archive fails with missing provisioning profile", context: ["xcode"], fix: "Download profiles in Xcode settings", outcome: "success" });
+    await call("record", {
+      problem: "Xcode archive fails with missing provisioning profile",
+      context: ["xcode"],
+      fix: "Download profiles in Xcode settings",
+      outcome: "success",
+    });
     const exported = await call("transfer", { mode: "export", path: "nested/backup.jsonl" });
     expect(exported.json.path).toBe(join(dir, "nested", "backup.jsonl"));
     expect(exported.json.records).toBe(1);
@@ -108,7 +128,12 @@ describe("MCP surface", () => {
 
   it("transfers inline JSONL", async () => {
     const a = await connect();
-    await a.call("record", { problem: "Docker build hangs on apt-get update", context: ["docker"], fix: "Add --no-cache and pin the mirror", outcome: "success" });
+    await a.call("record", {
+      problem: "Docker build hangs on apt-get update",
+      context: ["docker"],
+      fix: "Add --no-cache and pin the mirror",
+      outcome: "success",
+    });
     const exported = await a.call("transfer", { mode: "export" });
     expect(exported.text.split("\n")).toHaveLength(1);
     const b = await connect();
@@ -116,5 +141,55 @@ describe("MCP surface", () => {
     expect(imported.json.inserted).toBe(1);
     const hit = await b.call("recall", { problem: "docker apt-get update hanging during build" });
     expect(hit.json.hits[0].fix).toContain("--no-cache");
+  });
+});
+
+describe("evidence workflow over MCP", () => {
+  it("runs record, recall, begin_attempt, feedback, inspect and maintenance through real schemas", async () => {
+    const { client, call } = await connect();
+    try {
+      const r = await call("record", {
+        problem: "Example CLI rejects a top-level hook context field",
+        signals: ["additionalContext is not allowed"],
+        fix: "Emit hook context only in the nested host field",
+        outcome: "success",
+        applicability: { product: "example-cli", version: "2" },
+        claims: [{ key: "context-placement", value: "nested" }],
+      });
+      expect(r.isError).toBe(false);
+      const found = await call("recall", {
+        problem: "Example CLI rejects a top-level hook context field",
+        environment: { product: "example-cli", version: "2" },
+      });
+      expect(found.json.hits[0].revision).toMatch(/^[a-f0-9]{64}$/);
+      const receipt = await call("begin_attempt", {
+        id: r.json.id,
+        execution_id: "schema-run-1",
+        environment: { product: "example-cli", version: "2" },
+      });
+      expect(receipt.isError).toBe(false);
+      const { instruction, ...input } = receipt.json;
+      const args = {
+        ...input,
+        result: "verified-success",
+        evidence: {
+          summary: "Actual CLI schema validation passes",
+          reference: "schema-run-1.json",
+          observed_at: new Date().toISOString(),
+          level: "local-test",
+        },
+      };
+      const first = await call("feedback", args);
+      const again = await call("feedback", args);
+      expect(first.isError).toBe(false);
+      expect(again.json.evidence.successes).toBe(1);
+      const inspect = await call("inspect", { id: r.json.id });
+      expect(inspect.json.votes).toHaveLength(1);
+      expect(inspect.json.revision).toBe(receipt.json.revision);
+      expect((await call("maintenance", { mode: "run", limit: 1 })).isError).toBe(false);
+      expect((await call("feedback", { ...args, attempt_id: "missing-proof", evidence: undefined })).isError).toBe(true);
+    } finally {
+      await client.close();
+    }
   });
 });

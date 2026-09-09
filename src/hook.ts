@@ -62,7 +62,8 @@ export interface HookOptions {
 }
 
 const NAME = "learned-experience";
-const ERROR_LINE = /\b(error|exception|fail(ed|ure|s|ing)?|denied|not found|cannot|can't|unable|refused|panic|traceback|fatal|invalid|missing|timed? ?out|unexpected|broken|crash(es|ed|ing)?|ENOENT|EACCES|ECONN)\b/i;
+const ERROR_LINE =
+  /\b(error|exception|fail(ed|ure|s|ing)?|denied|not found|cannot|can't|unable|refused|panic|traceback|fatal|invalid|missing|timed? ?out|unexpected|broken|crash(es|ed|ing)?|ENOENT|EACCES|ECONN)\b/i;
 const NOISE_LINE = /^\s*(at\s+\S|\s*\^+\s*$|node:internal|\(node:\d+\)|npm (ERR!|warn)\s*$|\s*$)/i;
 const SKIP_ERROR = /\b(interrupted|cancel+ed|aborted by user|user denied|permission (was )?denied by (the )?user|rejected by user)\b/i;
 const OWN_TOOL = /learned[-_]experience__/;
@@ -85,7 +86,8 @@ export function responseText(value: unknown, depth = 0): string {
   return String(value);
 }
 
-const FAILED_TEXT = /("exit_code"\s*:\s*[1-9]\d*|\bexit(ed with)? code[: ]+[1-9]\d*|^\s*Script failed|Traceback \(most recent call last\)|command not found)/im;
+const FAILED_TEXT =
+  /("exit_code"\s*:\s*[1-9]\d*|\bexit(ed with)? code[: ]+[1-9]\d*|^\s*Script failed|Traceback \(most recent call last\)|command not found)/im;
 const EXIT_KEYS = ["exit_code", "exitCode", "exit_status", "status_code", "returncode"];
 
 /**
@@ -121,7 +123,14 @@ function hitLine(h: RecallHit, i: number): string {
   if (h.fix) parts.push(`fix: ${h.fix}`);
   if (h.avoid.length) parts.push(`avoid: ${h.avoid.join("; ")}`);
   if (h.root_cause) parts.push(`cause: ${h.root_cause}`);
-  parts.push(`(confidence ${h.confidence}${h.match.exact ? ", exact match" : `, score ${h.match.score}`}${h.outcome === "failure" ? ", unresolved last time" : ""})`);
+  if (h.revision) parts.push(`revision: ${h.revision}`);
+  if (h.recommendation) parts.push(h.recommendation);
+  if (h.constraints && Object.keys(h.constraints).length) parts.push(`requires: ${JSON.stringify(h.constraints)}`);
+  if (h.preconditions?.length) parts.push(`check: ${h.preconditions.join("; ")}`);
+  if (h.evidence) parts.push(`${h.evidence.successes} verified success reports, ${h.evidence.failures} failures; ${h.evidence.level}`);
+  parts.push(
+    `(confidence ${h.confidence}${h.match.exact ? ", exact match" : `, score ${h.match.score}`}${h.outcome === "failure" ? ", unresolved last time" : ""})`,
+  );
   return parts.join(" | ");
 }
 
@@ -166,17 +175,25 @@ export function formatContext(hits: RecallHit[], searched: number, quietOnMiss: 
   return (
     `${NAME}: ${hits.length} past experience${hits.length === 1 ? " matches" : "s match"} this failure.\n` +
     hits.map(hitLine).join("\n") +
-    `\nApply the best-fitting fix first, then call ${NAME} \`reinforce\` with its id and whether it worked. ` +
+    `\nCheck applicability first. Before trying a fix call begin_attempt with a shared execution identity, then feedback with the returned revision/attempt and checked evidence. Legacy reinforce remains available for unverified reports. ` +
     `If none fit and you solve it another way, call \`record\` once. If a hit is clearly unrelated, call \`dismiss\` with its id and this problem so it stops appearing here.`
   );
 }
 
-async function failureHook(input: HookInput, catalogue: Catalogue, opts: HookOptions, eventName: string): Promise<Record<string, unknown> | null> {
+async function failureHook(
+  input: HookInput,
+  catalogue: Catalogue,
+  opts: HookOptions,
+  eventName: string,
+): Promise<Record<string, unknown> | null> {
   const query = queryFromFailure(input);
   if (!query) return null;
   // Exact signal matches always surface; fuzzy matches need a clear margin or they are noise.
   const res = await catalogue.recall({ ...query, limit: opts.limit ?? 3, min_score: 0.5 });
-  const text = formatContext(res.hits, res.searched, opts.quietOnMiss ?? false);
+  let text = formatContext(res.hits, res.searched, opts.quietOnMiss ?? false);
+  if (text && res.maintenance_pending)
+    text +=
+      "\nMaintenance has queued reviews. If relevant evidence is available during this work, review at most one with the maintenance tool; otherwise leave it pending.";
   if (!text) return null;
   return contextOutput(eventName, text);
 }
@@ -208,15 +225,23 @@ export function formatPromptContext(hits: RecallHit[]): string | null {
   return (
     `${NAME}: ${hits.length} past experience${hits.length === 1 ? " looks" : "s look"} relevant to this request.\n` +
     hits.map(hitLine).join("\n") +
-    `\nIf one applies, use it and call ${NAME} \`reinforce\` with the result. If none apply, ignore this, or call \`dismiss\` with the id and this request if it keeps showing up wrongly.`
+    `\nIf one applies, use begin_attempt then feedback with checked evidence; legacy reinforce is unverified feedback. If none apply, ignore this, or call \`dismiss\` with the id and this request if it keeps showing up wrongly.`
   );
 }
 
-async function promptHook(input: HookInput, catalogue: Catalogue, opts: HookOptions, eventName: string): Promise<Record<string, unknown> | null> {
+async function promptHook(
+  input: HookInput,
+  catalogue: Catalogue,
+  opts: HookOptions,
+  eventName: string,
+): Promise<Record<string, unknown> | null> {
   const query = queryFromPrompt(input.prompt ?? "");
   if (!query) return null;
   const res = await catalogue.recall({ ...query, limit: opts.limit ?? 3, min_score: 0.5 });
-  const text = formatPromptContext(res.hits);
+  let text = formatPromptContext(res.hits);
+  if (text && res.maintenance_pending)
+    text +=
+      "\nMaintenance has queued reviews. Review at most one relevant item during work when evidence is available; never reopen a final answer for maintenance.";
   if (!text) return null;
   return contextOutput(eventName, text);
 }
@@ -303,7 +328,7 @@ function summarizeItems(items: TurnItem[]): TurnSummary {
   for (const it of items) {
     if (it.kind === "tool_use") {
       summary.toolCalls++;
-      if (OWN_TOOL.test(it.name) && /(record|reinforce)$/.test(it.name)) summary.recorded = true;
+      if (OWN_TOOL.test(it.name) && /(record|reinforce|feedback)$/.test(it.name)) summary.recorded = true;
       if (OWN_TOOL.test(it.name) && /recall$/.test(it.name)) summary.recalled = true;
     } else if (it.kind === "tool_result" && it.failed) {
       summary.failures++;
@@ -314,7 +339,8 @@ function summarizeItems(items: TurnItem[]): TurnSummary {
 
 /** Model-only context after a successful tool call. Never blocks or starts another model run. */
 async function recordReminder(input: HookInput, opts: HookOptions): Promise<Record<string, unknown> | null> {
-  if (opts.recordNudge === false || !input.transcript_path || !opts.claimReminder || !input.tool_name || OWN_TOOL.test(input.tool_name)) return null;
+  if (opts.recordNudge === false || !input.transcript_path || !opts.claimReminder || !input.tool_name || OWN_TOOL.test(input.tool_name))
+    return null;
   let turn: ReturnType<typeof lastTurn>;
   try {
     const read = opts.readTranscript ?? ((p: string) => readFile(p, "utf8"));
@@ -328,13 +354,17 @@ async function recordReminder(input: HookInput, opts: HookOptions): Promise<Reco
     (summary.failures >= (opts.recordMinFailures ?? 1) && summary.toolCalls >= (opts.recordMinToolCalls ?? 3)) ||
     summary.toolCalls >= (opts.recordLongTurn ?? 15);
   if (summary.recorded || !eventful) return null;
-  const key = createHash("sha256").update(JSON.stringify([input.transcript_path, turn.boundary])).digest("hex");
+  const key = createHash("sha256")
+    .update(JSON.stringify([input.transcript_path, turn.boundary]))
+    .digest("hex");
   if (!opts.claimReminder(key)) return null;
-  return contextOutput(input.hook_event_name!,
+  return contextOutput(
+    input.hook_event_name!,
     `${NAME}: before your final answer, if this work produced a reusable lesson you have not recorded, ` +
-    `call \`record\` once (or \`reinforce\` if you applied a recalled fix). ` +
-    `Wait until the outcome is verified; skip this if there is nothing worth keeping. ` +
-    `This is internal bookkeeping: keep your final answer focused on the user's request, not this reminder.`);
+      `call \`record\` once (or feedback with checked evidence if you applied a recalled fix; legacy reinforce remains available). ` +
+      `Wait until the outcome is verified; skip this if there is nothing worth keeping. ` +
+      `This is internal bookkeeping: keep your final answer focused on the user's request, not this reminder.`,
+  );
 }
 
 export function stopDecision(summary: TurnSummary, opts: HookOptions): Record<string, unknown> | null {

@@ -1,6 +1,6 @@
 {
   "name": "learned-experience",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "A self-improving catalogue of solved problems. Recalls past fixes automatically when a tool call fails or a request arrives, reminds the agent to record useful lessons during work without interrupting final answers, so nothing is learned twice.",
   "author": {
     "name": "fitz2882",
@@ -9,7 +9,14 @@
   "homepage": "https://github.com/fitz2882/learned-experience",
   "repository": "https://github.com/fitz2882/learned-experience",
   "license": "MIT",
-  "keywords": ["memory", "experience", "self-improving", "mcp", "hooks", "recall"],
+  "keywords": [
+    "memory",
+    "experience",
+    "self-improving",
+    "mcp",
+    "hooks",
+    "recall"
+  ],
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Learned Experience",
@@ -17,7 +24,13 @@
     "longDescription": "Gives Codex a persistent, portable catalogue of problems it has solved before. Past fixes are recalled automatically when a tool call fails or a request arrives, outcomes feed back into ranking, and new lessons are recorded once. The same catalogue is shared with Claude Code, Gemini CLI, Cursor, and any other MCP host.",
     "developerName": "fitz2882",
     "category": "Developer Tools",
-    "capabilities": ["Read", "Write"],
-    "websiteURL": "https://github.com/fitz2882/learned-experience"
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/fitz2882/learned-experience",
+    "defaultPrompt": [
+      "Recall relevant past fixes for this task and verify any advice before applying it."
+    ]
   }
 }
