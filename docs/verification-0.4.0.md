@@ -22,11 +22,11 @@ Verified locally on 2026-09-09 before publication. The checks below used isolate
 | Installed-artifact shape | npm package includes the new learning, maintenance and worker runtime modules |
 | Packaged runtime | Same 11-check replay passes with both workspace dependencies and a fresh consumer install of the release tarball |
 | Codex hooks | PostToolUse/UserPromptSubmit output validates against committed host schema fixtures; Stop emits no output |
-| Real catalogue replay | Isolated copy of 112 records loads with all embeddings and no embedding error; useful matches retained and pandas false positive removed |
-| Actual Workday duplicate pair | Automatically identified for review; reviewed grouping yields one recall slot while retaining both records |
+| Catalogue replay | Isolated test copy loads with all embeddings and no embedding error; relevant matches are retained and an unrelated match is excluded |
+| Duplicate detection and grouping | A duplicate pair is automatically identified for review; reviewed grouping yields one recall slot while retaining both records |
 | Whitespace/diff integrity | Pass |
 
-The real-catalogue copy reflects concurrent work elsewhere and contains 112 records, rather than the earlier audit's 111. It is not checked into this repository. No synthetic test lessons were inserted into the live catalogue.
+Replay checks used an isolated catalogue copy that is not included in this repository. Test records were confined to isolated test catalogues.
 
 ## Generate / verify / revise review
 
