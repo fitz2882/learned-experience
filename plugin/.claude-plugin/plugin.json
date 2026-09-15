@@ -2,8 +2,8 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "learned-experience",
   "displayName": "Learned Experience",
-  "version": "0.4.0",
-  "description": "A self-improving catalogue of solved problems. Recalls past fixes automatically when a tool call fails or a request arrives, reminds the agent to record useful lessons during work without interrupting final answers, so nothing is learned twice.",
+  "version": "0.4.1",
+  "description": "Turn past fixes into faster AI coding. Avoid repeated investigations and failed approaches with practical lessons shared across sessions and AI tools. Relevant guidance surfaces during work, and verified results improve future recommendations. Your lessons stay in a local database you control. No account or API key required.",
   "author": {
     "name": "fitz2882",
     "url": "https://github.com/fitz2882"
