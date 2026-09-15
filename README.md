@@ -1,6 +1,8 @@
 # learned-experience
 
-**A memory of solved problems for AI agents.** Any agent that speaks MCP can check it before working, apply what worked last time, report whether it worked, and record new lessons. Nothing has to be learned twice, and the catalogue travels with you across models, tools, and machines.
+<img src="assets/logo.png" alt="Learned Experience folded gold LE logo" width="160" height="160">
+
+**Turn past fixes into faster AI coding.** Spend less time repeating investigations, retrying failed approaches, or teaching a new agent the same lesson. Learned Experience gives your AI tools a shared library of fixes, pitfalls, and practical lessons that persists across sessions. Relevant guidance surfaces during work in supported hosts, and checked successes and failures help improve future recommendations. Your lessons stay in a local database you control, with export and import for moving between machines.
 
 - **Works with any MCP host**: Claude Code, Claude Desktop, Cursor, Windsurf, Codex CLI, Gemini CLI, or anything built on an MCP client. The server, tools, and data are identical everywhere.
 - **One-command setup**: `npx -y learned-experience install` detects your agents and configures each one.
@@ -44,7 +46,7 @@ codex plugin marketplace add fitz2882/learned-experience
 codex plugin add learned-experience
 ```
 
-The marketplace plugins pin their server and hook commands to the matching npm release. To update Claude Code, run `claude plugin marketplace update learned-experience` followed by `claude plugin update learned-experience@learned-experience`. For Codex, run `codex plugin marketplace upgrade learned-experience` followed by `codex plugin add learned-experience@learned-experience`. Restart existing host sessions after updating.
+The marketplace plugins pin their server and hook commands to a tested npm release. Marketplace version 0.4.1 updates the logo and descriptions and continues to use runtime 0.4.0. To update Claude Code, run `claude plugin marketplace update learned-experience` followed by `claude plugin update learned-experience@learned-experience`. For Codex, run `codex plugin marketplace upgrade learned-experience` followed by `codex plugin add learned-experience@learned-experience`. Restart existing host sessions after updating.
 
 **One catalogue for all of them.** Every host launches the same server, and the server reads the same database, so a lesson recorded in Codex is recalled in Claude Code, Gemini, Cursor, or OpenClaw, and vice versa.
 

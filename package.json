@@ -1,7 +1,7 @@
 {
   "name": "learned-experience",
   "version": "0.4.0",
-  "description": "Model-agnostic MCP server that gives any AI agent a persistent, self-improving catalogue of solved problems. Recall past fixes, record new ones, never learn the same thing twice.",
+  "description": "Help AI coding agents avoid repeated mistakes, reuse proven fixes, and share practical lessons across sessions and tools. Local memory with automatic recall in supported hosts and recommendations informed by verified results.",
   "type": "module",
   "license": "MIT",
   "bin": {
@@ -10,6 +10,7 @@
   "main": "dist/index.js",
   "files": [
     "dist",
+    "assets/logo.png",
     "README.md",
     "DESIGN.md",
     "LICENSE"

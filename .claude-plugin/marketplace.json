@@ -1,7 +1,7 @@
 {
   "$schema": "https://code.claude.com/schemas/marketplace.json",
   "name": "learned-experience",
-  "description": "learned-experience: a self-improving experience catalogue for AI agents",
+  "description": "Turn past fixes into faster AI coding with practical lessons shared across sessions and AI tools.",
   "owner": {
     "name": "fitz2882",
     "url": "https://github.com/fitz2882"
@@ -11,7 +11,7 @@
       "name": "learned-experience",
       "displayName": "Learned Experience",
       "source": "./plugin",
-      "description": "MCP server plus a PostToolUseFailure hook that recalls past fixes automatically.",
+      "description": "Turn past fixes into faster AI coding. Avoid repeated investigations and failed approaches with practical lessons shared across sessions and AI tools. Relevant guidance surfaces during work, and verified results improve future recommendations. Your lessons stay in a local database you control. No account or API key required.",
       "homepage": "https://github.com/fitz2882/learned-experience",
       "repository": "https://github.com/fitz2882/learned-experience",
       "license": "MIT"
