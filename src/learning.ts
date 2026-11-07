@@ -1,5 +1,7 @@
 /** Evidence and applicability are independent of retrieval similarity. No model or commands run here. */
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { basename, dirname, resolve } from "node:path";
 import { ExperienceInput, type Experience, type Applicability, type FeedbackInput } from "./schema.js";
 import { clean, normalizeTag } from "./normalize.js";
 
@@ -29,7 +31,8 @@ export function applicabilityMatch(scope: Applicability = {}, environment: Appli
   for (const [key, value] of Object.entries(scope)) {
     const actual = environment[key as keyof Applicability];
     if (!actual) unknown = true;
-    else if (value?.toLowerCase() !== actual.toLowerCase()) return "mismatch";
+    else if (key === "project" ? canonicalProject(value) !== canonicalProject(actual) : value?.toLowerCase() !== actual.toLowerCase())
+      return "mismatch";
   }
   return unknown ? "unknown" : "match";
 }
@@ -106,4 +109,45 @@ export function cleanObservation(o: NonNullable<ExperienceInput["observations"]>
 /** Tag aliases only; a broad tag such as python is never an environment constraint. */
 export function canonicalTag(tag: string): string {
   return normalizeTag(tag).replace(/^job-applications$/, "job-application");
+}
+
+/**
+ * One spelling per project: the last path segment, lowercased, with spaces and underscores as hyphens.
+ * "~/vesper root/personal projects/capability atlas", "Capability Atlas" and "capability_atlas" all
+ * become "capability-atlas". Applied at match time, so stored revisions and their votes are unchanged.
+ */
+export function canonicalProject(value: string | undefined | null): string {
+  if (!value) return "";
+  const last = value.trim().replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
+  return last
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-")
+    .replace(/[^a-z0-9.+-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+/** The project a hook runs in: the enclosing git repository's folder name, else the working folder's. */
+export function projectFromCwd(cwd: string | undefined, exists: (p: string) => boolean = existsSync): string | undefined {
+  if (!cwd) return undefined;
+  let dir = resolve(cwd);
+  for (let i = 0; i < 40; i++) {
+    if (exists(`${dir}/.git`)) return canonicalProject(basename(dir)) || undefined;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return canonicalProject(basename(resolve(cwd))) || undefined;
+}
+
+/** Canonical projects in which a lesson was written or verified. */
+export function projectsOf(doc: Experience): Set<string> {
+  const out = new Set<string>();
+  const own = canonicalProject(doc.applicability?.project);
+  if (own) out.add(own);
+  for (const v of doc.votes ?? []) {
+    const p = canonicalProject(v.environment?.project);
+    if (p) out.add(p);
+  }
+  return out;
 }

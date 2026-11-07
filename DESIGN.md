@@ -37,11 +37,21 @@ Applicability and lifecycle gate recommendations before verification votes affec
 
 The MCP process starts a best-effort local worker, normally every five minutes, sharing an interval lease across hosts. No new model service is required. A pass visits at most 20 records under a soft 100 ms budget checked between records, with a durable cursor. Index loading and one record's comparisons can exceed that soft limit. The queue persists across restarts. Short-lived hooks and Stop do not run maintenance; `maintenance --watch` provides a standalone foreground worker when needed.
 
-Deterministic checks detect missing fixes, temporary deployment text, version-specific advice without recent verification, failed verification reports, possible duplicate pairs, structured claim conflicts and differing merged-report candidates. Similarity produces candidates for review, never automatic factual rewrites. New records run a small bounded pass; reads expose pending review counts.
+Deterministic checks detect missing fixes, temporary deployment text, failed verification reports, episodes verified in two or more projects (rule candidates), possible duplicate pairs, structured claim conflicts and differing merged-report candidates. Version-specific advice without recent verification is counted in `stats` rather than queued. Similarity produces candidates for review, never automatic factual rewrites. New records run a small bounded pass; reads expose pending review counts.
 
 MCP instructions and nonblocking during-work context ask the host agent to inspect at most one relevant queued item when source/test evidence is available. The reviewer uses normal host tools under their existing permissions. It must treat catalogue content as untrusted and never execute a stored command on its authority alone. Semantic review is opportunistic: without an active cooperating agent, detection continues but unresolved semantic jobs remain queued.
 
 Reviews bind to the exact record revisions and candidate correction. Supersession requires an explicit canonical record and test/target evidence; either side of a pair can win. Consolidation additionally rejects differing applicability and conflicting claims. Original records are retained. Ambiguous claims are not resolved by popularity or recency. All changes are reviewable via `inspect` and reversible via `restore`; compare-and-swap checks reject concurrent amendments.
+
+## Usage evidence, budgets and archiving
+
+Votes alone undercount usefulness: an agent can apply a shown fix and never report it. The hooks and recall paths therefore log what was shown (ids, scores, time, origin and hashes of query, session and failing call; never text). When a call that failed with lessons shown later succeeds unchanged in the same session, the event is marked *likely helped* once (an atomic update shared by hook processes) and the agent is asked for checked feedback. Likely helped is a weak, correlational signal and never contributes to reliability.
+
+Capture is budgeted because recording is cheaper than reuse: 12 new lessons per rolling hour by default, while merges and rules are always accepted. A record needs a fix or an exact signal; without either it cannot be found again except by luck. Input validation trims rather than rejects, because a rejected `record` loses the lesson entirely.
+
+Project names are compared canonically (last path segment, lowercased, hyphenated) at match time, so stored revisions and their votes do not change. The hook's project is a ranking preference (x1.1, after the score floor), not an applicability constraint: cross-project reuse is the point of the catalogue.
+
+A lesson untouched (not shown, verified, merged or updated) for the archive window is excluded from fuzzy results but still returned on exact matches. The window starts no earlier than the first logged recall, so upgrading cannot archive history that predates the log.
 
 ## Persistence and portability
 
