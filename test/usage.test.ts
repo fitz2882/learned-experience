@@ -141,17 +141,17 @@ describe("record gate", () => {
 
 describe("project names", () => {
   it("treats different spellings of one project as the same", () => {
-    expect(canonicalProject("~/vesper root/personal projects/capability atlas")).toBe("capability-atlas");
-    expect(canonicalProject("Capability Atlas")).toBe("capability-atlas");
-    expect(canonicalProject("capability_atlas/")).toBe("capability-atlas");
-    expect(canonicalProject("design space")).toBe(canonicalProject("design-space"));
-    expect(applicabilityMatch({ project: "capability atlas" }, { project: "/Users/x/Personal Projects/Capability Atlas" })).toBe("match");
-    expect(applicabilityMatch({ project: "capability atlas" }, { project: "design-space" })).toBe("mismatch");
+    expect(canonicalProject("~/work/example app")).toBe("example-app");
+    expect(canonicalProject("Example App")).toBe("example-app");
+    expect(canonicalProject("example_app/")).toBe("example-app");
+    expect(canonicalProject("demo service")).toBe(canonicalProject("demo-service"));
+    expect(applicabilityMatch({ project: "example app" }, { project: "/Users/x/Code/Example App" })).toBe("match");
+    expect(applicabilityMatch({ project: "example app" }, { project: "demo-service" })).toBe("mismatch");
   });
 
   it("finds the repository folder above the working folder", () => {
-    const exists = (p: string) => p === "/home/u/Code/Loopgain Studio/.git";
-    expect(projectFromCwd("/home/u/Code/Loopgain Studio/src/app", exists)).toBe("loopgain-studio");
+    const exists = (p: string) => p === "/home/u/Code/Sample Repo/.git";
+    expect(projectFromCwd("/home/u/Code/Sample Repo/src/app", exists)).toBe("sample-repo");
     expect(projectFromCwd("/tmp/scratch dir", () => false)).toBe("scratch-dir");
     expect(projectFromCwd(undefined)).toBeUndefined();
   });

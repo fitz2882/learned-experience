@@ -113,8 +113,8 @@ export function canonicalTag(tag: string): string {
 
 /**
  * One spelling per project: the last path segment, lowercased, with spaces and underscores as hyphens.
- * "~/vesper root/personal projects/capability atlas", "Capability Atlas" and "capability_atlas" all
- * become "capability-atlas". Applied at match time, so stored revisions and their votes are unchanged.
+ * "~/work/example app", "Example App" and "example_app" all
+ * become "example-app". Applied at match time, so stored revisions and their votes are unchanged.
  */
 export function canonicalProject(value: string | undefined | null): string {
   if (!value) return "";
