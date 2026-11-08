@@ -102,6 +102,7 @@ MCP cannot see a model's reasoning, so without hooks the model has to remember t
 |---|---|---|---|---|
 | **A tool call fails** | `PostToolUseFailure` | `PostToolUse` | `AfterTool` | The error text becomes a query. Matching fixes are injected with the instruction to apply one and `reinforce`. On a miss, a one-line reminder to `record` once solved. Codex and Gemini have no failure event, so the hook runs after every tool call and acts only when the response carries a non-zero exit code, an error flag, or unmistakable failure text. |
 | **You send a request** | `UserPromptSubmit` | `UserPromptSubmit` | `BeforeAgent` | The request becomes a query. If past experience looks relevant it is injected before the model starts. Silent otherwise; skipped for short prompts and slash commands. |
+| **A failed call later succeeds** | `PostToolUse` | `PostToolUse` | `AfterTool` | If the same call (same tool and command) failed earlier in the session and lessons were shown for it, the hook asks once whether one of them fixed it, and counts it as *likely helped* in the usage log. It never becomes a verified vote by itself. `LEARNED_EXPERIENCE_HELPED_NUDGE=0` turns it off. |
 | **Work becomes substantial** | `PostToolUse` | `PostToolUse` | no transcript-based reminder yet | After a successful tool call, the hook checks the current transcript. After a failure across at least three calls, or fifteen calls without failures, it sends one non-blocking reminder to record a verified lesson before the final answer. No extra model run is started. |
 | **The turn ends** | `Stop` | `Stop` | not available | Silent by default so the final answer is delivered without a housekeeping continuation. Explicitly setting `LEARNED_EXPERIENCE_STOP_NUDGE=1` enables the legacy blocking reminder after eventful turns; its loop guard still applies. |
 
@@ -179,7 +180,7 @@ Use optional `applicability` for exact `product`, `version`, `platform` and `pro
 
 The running MCP server starts a local maintenance sweep on startup and every five minutes. Multiple hosts share an interval lease. Each pass visits at most 20 records with a 100 ms soft processing budget; it uses a persisted cursor and queue. No new infrastructure, network model calls or commands from lessons are used. `record` also runs a small bounded pass. Short-lived hooks never start the worker, and Stop stays silent.
 
-Checks queue incomplete fixes, temporary status, unverified version-specific advice, failed verifications, possible duplicate pairs, explicit conflicting claims and corrections embedded in merged reports. Queue entries are revision-bound. A semantic resemblance creates a review candidate, not permission to merge. The host agent is instructed to handle at most one relevant review during normal work when it has evidence; uncertain items remain pending. Thus detection is automatic, while semantic correction depends on an active, cooperating agent with source/test access. The server does not pretend a queue alone proves correctness.
+Checks queue incomplete fixes, temporary status, failed verifications, possible duplicate pairs, explicit conflicting claims, corrections embedded in merged reports, and lessons verified in two or more projects that could become a general rule (`promote`). Version-specific advice without recent verification is no longer queued: it was the large majority of items and rarely actionable, so `stats` reports it as a count instead, and old `unverified` items are cleared on the next sweep. Queue entries are revision-bound. A semantic resemblance creates a review candidate, not permission to merge. The host agent is instructed to handle at most one relevant review during normal work when it has evidence; uncertain items remain pending. Thus detection is automatic, while semantic correction depends on an active, cooperating agent with source/test access. The server does not pretend a queue alone proves correctness.
 
 `maintenance(mode="resolve")` accepts checked evidence. `supersede` and `consolidate` take an optional `winner_id` selecting either record in a pair (default: `related_id`). Superseded records disappear from ordinary recommendations; reviewed duplicates share one result slot without deleting observations or combining votes. `accept-candidate` applies the exact queued correction. Inspect its history first. `dismiss` closes an inapplicable review item. Use `amend` with `expected_revision` to make other evidence-backed corrections, or `restore` to undo them. Stored text is untrusted data; reviewers must not execute commands merely because a lesson suggests them.
 
@@ -191,6 +192,16 @@ learned-experience maintenance --watch  # foreground worker, five-minute interva
 ```
 
 **Upgrading:** back up the SQLite database (or export it) and upgrade all writers together. Existing v1 records load without fabricated votes or verification. Legacy `reinforce` calls and counters remain available, but recall reliability now uses verification reports. Votes and history travel in JSONL. Different imported content becomes a review candidate; independent votes are unioned by identity. Older binaries do not understand these extensions and must not write to an upgraded catalogue. `npm`/marketplace publication and host restart are separate from building this checkout.
+
+## Usage, budgets and archiving (0.5)
+
+These answer "is it actually helping?" and keep the catalogue from filling with one-off notes.
+
+- **Usage log.** Every recall that reaches an agent (hooks, the MCP `recall` tool, the `recall` command) is logged locally: time, origin, hook event, the ids and scores shown, and hashes of the query, session and failing call. No prompt, error or command text is stored. `stats` has a `usage` section: recalls and hit rate over 30 days, lessons shown, lessons never shown, *likely helped* follow-ups, lessons verified in two or more projects, archived lessons and the most-shown lessons.
+- **Recording budget.** `record` needs a fix or at least one exact error signal. New lessons are limited to 12 per rolling hour across all agents (`LEARNED_EXPERIENCE_RECORD_BUDGET`, `0` disables), so a fan-out of parallel workers cannot flood the catalogue. Merges into an existing lesson and `kind: "rule"` are always accepted. A skipped call returns `action: "skipped"` with the reason and any related lessons.
+- **Lenient input.** Over-long text and lists in `record` and `feedback` are trimmed to the stored limits instead of failing the call. Scope aliases are mapped (`os` to `platform`, `repo` to `project`, `framework`/`tool`/`library`/`package` to `product`) and other scope keys are kept as preconditions. Date-only evidence times are accepted.
+- **Projects.** Project names are compared in one canonical spelling (`~/work/Example App`, `example app` and `example_app` are the same project), so spelling differences no longer exclude a lesson. Hooks work out the current project from the enclosing git folder and rank its lessons slightly higher. This is a ranking hint, never a filter.
+- **Archive.** A lesson that has not been shown, verified, merged or updated for 90 days (`LEARNED_EXPERIENCE_ARCHIVE_DAYS`, `0` disables) only comes back on an exact error match, or with `include_archived` on `recall`. The clock for "shown" starts when the usage log starts, so upgrading never archives anything straight away. Nothing is deleted.
 
 ## Command line
 
@@ -235,6 +246,9 @@ All optional.
 | `LEARNED_EXPERIENCE_MAINTENANCE` | `1` | `0`: disable the automatic local maintenance timer; explicit maintenance tools still work |
 | `LEARNED_EXPERIENCE_HOOK_QUIET` | unset | `1`: no reminder after a failure that matches nothing |
 | `LEARNED_EXPERIENCE_RECORD_NUDGE` | `1` | `0`: disable the non-blocking recording reminder during work |
+| `LEARNED_EXPERIENCE_HELPED_NUDGE` | `1` | `0`: do not ask whether a shown lesson helped when a failed call later succeeds |
+| `LEARNED_EXPERIENCE_RECORD_BUDGET` | `12` | New lessons accepted per rolling hour; merges and rules are exempt. `0`: no budget |
+| `LEARNED_EXPERIENCE_ARCHIVE_DAYS` | `90` | Days unused before a lesson only returns on exact matches. `0`: never archive |
 | `LEARNED_EXPERIENCE_RECORD_MIN_FAILURES` | `1` | Failures needed for the during-work reminder |
 | `LEARNED_EXPERIENCE_RECORD_MIN_CALLS` | `3` | Tool calls needed alongside those failures |
 | `LEARNED_EXPERIENCE_RECORD_LONG_TURN` | `15` | Tool calls that qualify even without failures |
@@ -247,7 +261,7 @@ Changing the embedding model is safe. Stored vectors are tagged with the model i
 
 ## Privacy
 
-Records are meant to travel, so every string is cleaned on write: API keys, tokens, JWTs, bearer headers, `key=value` secrets, emails, and URL credentials are redacted, and home directories become `~`. Nothing leaves your machine unless you choose a remote embedding provider or export a file.
+The usage log stays in the local database and holds only ids, scores, times and hashes. Records are meant to travel, so every string is cleaned on write: API keys, tokens, JWTs, bearer headers, `key=value` secrets, emails, and URL credentials are redacted, and home directories become `~`. Nothing leaves your machine unless you choose a remote embedding provider or export a file.
 
 ## Development
 

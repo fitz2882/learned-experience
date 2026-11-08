@@ -128,7 +128,7 @@ async function main(): Promise<void> {
       .split(/\r?\n/)
       .map((l) => l.trim())
       .filter(Boolean);
-    const res = await catalogue.recall({ problem: lines[0].slice(0, 240), signals: lines.slice(1, 9) });
+    const res = await catalogue.recall({ problem: lines[0].slice(0, 240), signals: lines.slice(1, 9), log: { origin: "cli" } });
     process.stdout.write(JSON.stringify(res, null, 2) + "\n");
     store.close();
     return;

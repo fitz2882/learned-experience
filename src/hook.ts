@@ -3,7 +3,8 @@
  * dispatches on the event name:
  *
  *   PostToolUseFailure  (Claude Code) a tool call failed -> recall by error text, inject matching fixes
- *   PostToolUse         recall on failure; otherwise remind once during substantial work, before the final answer
+ *   PostToolUse         recall on failure; after a success, ask once whether a lesson shown for the same
+ *                       failing call helped; otherwise remind once during substantial work, before the final answer
  *   AfterTool           (Gemini CLI) same as PostToolUse
  *   UserPromptSubmit    the user asked for something -> recall by the request, inject relevant past experience
  *   BeforeAgent         (Gemini CLI) same as UserPromptSubmit
@@ -15,6 +16,7 @@
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import type { Catalogue } from "./catalogue.js";
+import { projectFromCwd } from "./learning.js";
 import { clean } from "./normalize.js";
 import type { RecallHit } from "./schema.js";
 
@@ -28,6 +30,7 @@ export interface HookInput {
   transcript_path?: string;
   stop_hook_active?: boolean;
   session_id?: string;
+  cwd?: string;
   /** Codex extension, also identifies older hook registrations without --codex. */
   turn_id?: string;
 }
@@ -50,6 +53,8 @@ export interface HookOptions {
   stopMinFailures?: number;
   stopMinToolCalls?: number;
   stopLongTurn?: number;
+  /** Ask once whether a shown lesson helped when a failed call later succeeds (default: true). */
+  helpedNudge?: boolean;
   /** Remind during work through non-blocking tool context (default: true). */
   recordNudge?: boolean;
   recordMinFailures?: number;
@@ -134,6 +139,24 @@ function hitLine(h: RecallHit, i: number): string {
   return parts.join(" | ");
 }
 
+/**
+ * A stable identity for "the same call again": the tool plus its whitespace-normalised command or
+ * input. Hashed, so neither the command nor its arguments are stored.
+ */
+export function actionKey(input: HookInput): string | undefined {
+  const tool = input.tool_name;
+  if (!tool || input.tool_input == null) return undefined;
+  const command = (input.tool_input as { command?: unknown }).command;
+  const raw = typeof command === "string" ? command : Array.isArray(command) ? command.join(" ") : JSON.stringify(input.tool_input);
+  const normalized = raw.replace(/\s+/g, " ").trim();
+  if (!normalized) return undefined;
+  return createHash("sha256").update(`${tool}\n${normalized}`).digest("hex");
+}
+
+function logFor(input: HookInput, event: string, action?: string) {
+  return { origin: "hook" as const, event, session: input.session_id, action };
+}
+
 // --------------------------------------------------------- tool failure hook
 
 /** Turn a failure payload into a recall query. Returns null when the failure is not worth a lookup. */
@@ -189,7 +212,13 @@ async function failureHook(
   const query = queryFromFailure(input);
   if (!query) return null;
   // Exact signal matches always surface; fuzzy matches need a clear margin or they are noise.
-  const res = await catalogue.recall({ ...query, limit: opts.limit ?? 3, min_score: 0.5 });
+  const res = await catalogue.recall({
+    ...query,
+    limit: opts.limit ?? 3,
+    min_score: 0.5,
+    prefer_project: projectFromCwd(input.cwd),
+    log: logFor(input, eventName, actionKey(input)),
+  });
   let text = formatContext(res.hits, res.searched, opts.quietOnMiss ?? false);
   if (text && res.maintenance_pending)
     text +=
@@ -237,13 +266,41 @@ async function promptHook(
 ): Promise<Record<string, unknown> | null> {
   const query = queryFromPrompt(input.prompt ?? "");
   if (!query) return null;
-  const res = await catalogue.recall({ ...query, limit: opts.limit ?? 3, min_score: 0.5 });
+  const res = await catalogue.recall({
+    ...query,
+    limit: opts.limit ?? 3,
+    min_score: 0.5,
+    prefer_project: projectFromCwd(input.cwd),
+    log: logFor(input, eventName),
+  });
   let text = formatPromptContext(res.hits);
   if (text && res.maintenance_pending)
     text +=
       "\nMaintenance has queued reviews. Review at most one relevant item during work when evidence is available; never reopen a final answer for maintenance.";
   if (!text) return null;
   return contextOutput(eventName, text);
+}
+
+// ------------------------------------------------------------ helped follow-up
+
+/**
+ * After a successful tool call: if this exact call failed earlier in the session and lessons were
+ * shown for it, ask once whether one of them helped. The success is recorded as `likely_helped`
+ * in the usage log; it never becomes a verified vote on its own.
+ */
+async function helpedFollowUp(input: HookInput, catalogue: Catalogue, opts: HookOptions): Promise<Record<string, unknown> | null> {
+  if (opts.helpedNudge === false || !input.session_id || !input.tool_name || OWN_TOOL.test(input.tool_name)) return null;
+  const action = actionKey(input);
+  if (!action) return null;
+  const shown = await catalogue.shownFor(input.session_id, action);
+  if (!shown || !catalogue.markHelped(shown.seq)) return null;
+  const ids = shown.ids.map((id) => `[${id}]`).join(", ");
+  return contextOutput(
+    input.hook_event_name!,
+    `${NAME}: this call failed earlier in the session and ${ids} ${shown.ids.length === 1 ? "was" : "were"} shown for it; it now succeeds. ` +
+      `If one of those lessons is what fixed it, call begin_attempt then feedback (verified-success, with this run as evidence). ` +
+      `If they did not help, call feedback with irrelevant or ignore this. Keep your answer focused on the user's request.`,
+  );
 }
 
 // ------------------------------------------------------------------ stop hook
@@ -360,10 +417,13 @@ async function recordReminder(input: HookInput, opts: HookOptions): Promise<Reco
   if (!opts.claimReminder(key)) return null;
   return contextOutput(
     input.hook_event_name!,
-    `${NAME}: before your final answer, if this work produced a reusable lesson you have not recorded, ` +
-      `call \`record\` once (or feedback with checked evidence if you applied a recalled fix; legacy reinforce remains available). ` +
-      `Wait until the outcome is verified; skip this if there is nothing worth keeping. ` +
-      `This is internal bookkeeping: keep your final answer focused on the user's request, not this reminder.`,
+    // Concrete counts and a direct ask: softer wording was routinely skipped in practice.
+    `${NAME}: this turn so far has ${
+      summary.failures ? `${summary.failures} failed tool call${summary.failures === 1 ? "" : "s"} across ` : ""
+    }${summary.toolCalls} tool calls and nothing recorded. Once the outcome is verified, and before your final answer, ` +
+      `call \`record\` once with the fix, the exact error signal and what did not work, if a future session in another project could reuse it. ` +
+      `If you applied a recalled fix, call feedback with checked evidence instead. Skip only routine work with nothing new. ` +
+      `Keep your final answer focused on the user's request, not this reminder.`,
   );
 }
 
@@ -411,9 +471,8 @@ async function dispatchHook(input: HookInput, catalogue: Catalogue, opts: HookOp
       return stopHook(input, opts);
     case "PostToolUse": // recall failures; successful calls can carry a non-blocking recording reminder
     case "AfterTool": // Gemini CLI, same idea; tool_response carries an `error` field on failure
-      return looksFailed(input.tool_response, input.error)
-        ? failureHook(input, catalogue, opts, input.hook_event_name)
-        : recordReminder(input, opts);
+      if (looksFailed(input.tool_response, input.error)) return failureHook(input, catalogue, opts, input.hook_event_name);
+      return (await helpedFollowUp(input, catalogue, opts)) ?? recordReminder(input, opts);
     case "PostToolUseFailure":
     case undefined: // older registrations passed no event name; treat as a failure payload
       return failureHook(input, catalogue, opts, "PostToolUseFailure");
@@ -440,6 +499,7 @@ export function hookOptionsFromEnv(env: NodeJS.ProcessEnv): HookOptions {
     stopMinToolCalls: num(env.LEARNED_EXPERIENCE_STOP_MIN_CALLS),
     stopLongTurn: num(env.LEARNED_EXPERIENCE_STOP_LONG_TURN),
     recordNudge: env.LEARNED_EXPERIENCE_RECORD_NUDGE !== "0",
+    helpedNudge: env.LEARNED_EXPERIENCE_HELPED_NUDGE !== "0",
     recordMinFailures: num(env.LEARNED_EXPERIENCE_RECORD_MIN_FAILURES),
     recordMinToolCalls: num(env.LEARNED_EXPERIENCE_RECORD_MIN_CALLS),
     recordLongTurn: num(env.LEARNED_EXPERIENCE_RECORD_LONG_TURN),

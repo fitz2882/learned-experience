@@ -29,6 +29,8 @@ import {
 import { Store } from "./store.js";
 import {
   applicabilityMatch,
+  canonicalProject,
+  projectsOf,
   canonicalTag,
   cleanFeedback,
   cleanObservation,
@@ -54,6 +56,10 @@ export interface CatalogueOptions {
   /** Token Jaccard of two fixes at or above which they count as "the same fix". */
   sameFixJaccard?: number;
   now?: () => Date;
+  /** New lessons (not merges) accepted per rolling hour; 0 disables the budget. */
+  recordBudget?: number;
+  /** Days without being shown, verified or updated before a lesson is archived. */
+  archiveDays?: number;
 }
 
 export interface RecallQuery {
@@ -65,6 +71,12 @@ export interface RecallQuery {
   kinds?: Kind[];
   environment?: Applicability;
   include_history?: boolean;
+  /** Archived lessons (unused for archiveDays) are only returned on an exact match unless this is set. */
+  include_archived?: boolean;
+  /** Rank lessons from this project slightly higher. A hint, never a filter. */
+  prefer_project?: string;
+  /** Log the result as shown to an agent. Only hashes, ids and scores are kept. */
+  log?: { origin: "hook" | "mcp" | "cli"; event?: string; session?: string; action?: string };
 }
 
 export interface RecallResult {
@@ -76,7 +88,9 @@ export interface RecallResult {
 
 export interface RecordResult {
   id: string;
-  action: "created" | "merged" | "linked";
+  action: "created" | "merged" | "linked" | "skipped";
+  /** Present when skipped: why nothing was stored. */
+  reason?: string;
   /** Present when merged: the record the report was folded into. */
   merged_into?: string;
   /** Present when linked: records with the same fingerprint but a different fix. */
@@ -118,6 +132,8 @@ export class Catalogue {
       duplicateJaccard: opts.duplicateJaccard ?? 0.5,
       sameFixJaccard: opts.sameFixJaccard ?? 0.4,
       now: opts.now ?? (() => new Date()),
+      recordBudget: opts.recordBudget ?? 12,
+      archiveDays: opts.archiveDays ?? 90,
     };
   }
 
@@ -270,6 +286,9 @@ export class Catalogue {
     for (const h of denseHits) if (h.score > 0) bump(h.id, wD * h.score, "semantic");
 
     const queryKeys = new Set(queryKeysFor(problem, signals));
+    const archived = q.include_archived ? null : this.archivedIds();
+    const preferred = canonicalProject(q.prefer_project);
+    const rank = new Map<string, number>();
     const hits: RecallHit[] = [];
     for (const [id, { score, via }] of scores) {
       const doc = this.records.get(id);
@@ -290,6 +309,7 @@ export class Catalogue {
       )
         continue;
       const exact = via.has("fingerprint");
+      if (!exact && archived?.has(id)) continue; // unused for a long time: only an exact signal brings it back
       // A generic matching word is not enough; allow strong semantic paraphrases independently.
       const dense = denseHits.find((h) => h.id === id)?.score ?? 0;
       if (!exact && minScore >= 0.4 && coverage(id) < 0.25 && dense < 0.65) continue;
@@ -298,6 +318,7 @@ export class Catalogue {
       const reliability = evidence.confidence || 0.5;
       const final = base * (0.85 + 0.15 * reliability);
       if (!exact && final < minScore) continue;
+      rank.set(id, preferred && projectsOf(doc).has(preferred) ? Math.min(final * 1.1, 1.05) : final);
       const disputed = [...this.records.values()].some(
         (other) => other.id !== doc.id && other.lifecycle !== "superseded" && conflictingClaims(doc, other),
       );
@@ -320,7 +341,7 @@ export class Catalogue {
                 : "candidate-fix",
       });
     }
-    hits.sort((a, b) => b.match.score - a.match.score || (a.id < b.id ? -1 : 1));
+    hits.sort((a, b) => rank.get(b.id)! - rank.get(a.id)! || b.match.score - a.match.score || (a.id < b.id ? -1 : 1));
     const families = new Set<string>();
     const diverse = hits.filter((h) => {
       const family = this.records.get(h.id)!.family ?? h.id;
@@ -328,12 +349,72 @@ export class Catalogue {
       families.add(family);
       return true;
     });
+    const shown = diverse.slice(0, limit);
+    if (q.log) this.logShown(q.log, problem, signals, preferred, shown);
     return {
-      hits: diverse.slice(0, limit),
+      hits: shown,
       searched: this.records.size,
       semantic: qv !== null,
       maintenance_pending: this.maintenance.queue(100000).length,
     };
+  }
+
+  /** Never let usage logging break recall (for example on a read-only catalogue). */
+  private logShown(log: NonNullable<RecallQuery["log"]>, problem: string, signals: string[], project: string, hits: RecallHit[]): void {
+    try {
+      this.store.logRecall({
+        at: this.opts.now().toISOString(),
+        origin: log.origin,
+        event: log.event,
+        session: log.session ? digest(log.session) : undefined,
+        action: log.action,
+        query: digest([problem, signals]),
+        project: project || undefined,
+        hits: hits.map((h) => ({ id: h.id, score: h.match.score })),
+      });
+    } catch (e) {
+      process.stderr.write(`learned-experience: usage log skipped: ${e instanceof Error ? e.message : String(e)}\n`);
+    }
+  }
+
+  /**
+   * A lesson is archived when nothing has touched it for archiveDays: not shown to an agent, not
+   * verified, not updated or merged. The clock for "shown" starts when usage logging began, so an
+   * upgrade never archives lessons merely because their history predates the log.
+   */
+  private archivedIds(): Set<string> {
+    const out = new Set<string>();
+    if (this.opts.archiveDays <= 0) return out;
+    const cutoff = this.opts.now().getTime() - this.opts.archiveDays * 86400000;
+    const since = this.store.getMeta("recall-log:since");
+    if (!since || Date.parse(since) > cutoff) return out;
+    const shown = this.store.lastShown();
+    for (const doc of this.records.values()) {
+      const touched = [doc.updated, shown.get(doc.id)?.at, doc.stats.last_used, ...(doc.votes ?? []).map((v) => v.recorded_at)]
+        .filter((t): t is string => !!t)
+        .map((t) => Date.parse(t));
+      if (Math.max(...touched) < cutoff) out.add(doc.id);
+    }
+    return out;
+  }
+
+  /** Lessons shown earlier in this session for the same failing tool call, not yet followed up. */
+  async shownFor(session: string, action: string, withinMs = 2 * 3600000): Promise<{ seq: number; ids: string[] } | null> {
+    const since = new Date(this.opts.now().getTime() - withinMs).toISOString();
+    try {
+      return this.store.shownFor(digest(session), action, since);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Record that the failing call later succeeded. A weak signal, kept apart from verified votes. */
+  markHelped(seq: number): boolean {
+    try {
+      return this.store.markHelped(seq, this.opts.now().toISOString());
+    } catch {
+      return false;
+    }
   }
 
   private exactSignalMatches(signals: string[], context: string[]): Set<string> {
@@ -396,6 +477,10 @@ export class Catalogue {
     const input = sanitize(raw);
     const fp = fingerprint(input.problem, input.signals, input.context);
     const now = this.opts.now().toISOString();
+    if (!input.fix && input.signals.length === 0)
+      throw new Error(
+        "record needs a fix or at least one exact error signal; an unresolved problem with neither cannot be matched later",
+      );
 
     const vec = await this.embedOne(embedText(input));
     const ordered = this.duplicateCandidates(input, fp, vec);
@@ -416,7 +501,22 @@ export class Catalogue {
       return { id: merged.id, action: "merged", merged_into: merged.id, fingerprint: fp };
     }
 
-    // Genuinely new fix (possibly for a known symptom): create and link.
+    // Genuinely new fix (possibly for a known symptom). Merges above are always accepted; new lessons
+    // are budgeted so a burst of parallel workers cannot flood the catalogue with one-off notes.
+    if (this.opts.recordBudget > 0 && input.kind !== "rule") {
+      const hourAgo = this.opts.now().getTime() - 3600000;
+      const recent = [...this.records.values()].filter((d) => Date.parse(d.created) > hourAgo).length;
+      if (recent >= this.opts.recordBudget)
+        return {
+          id: ordered[0] ?? "",
+          action: "skipped",
+          reason:
+            `${recent} new lessons were stored in the last hour (budget ${this.opts.recordBudget}). ` +
+            "Record only what will clearly help a future, different task; prefer amend on a related lesson, or retry later.",
+          related: ordered.length ? ordered : undefined,
+          fingerprint: fp,
+        };
+    }
     const id = newId();
     const doc: Experience = {
       ...input,
@@ -745,7 +845,51 @@ export class Catalogue {
       embedding_model: this.embedderId,
       embedding_error: this.embedFailure,
       top_context: topContext,
+      usage: this.usage(all),
       db: this.store.path,
+    };
+  }
+
+  /**
+   * What agents were actually shown, from the local usage log. `likely_helped` counts failing tool
+   * calls that later succeeded in the same session after lessons were shown: a weak signal, kept
+   * separate from verified votes.
+   */
+  private usage(all: Experience[]): Record<string, unknown> {
+    let since: string | null = null;
+    let events: ReturnType<Store["recallEvents"]> = [];
+    let lastShown = new Map<string, { at: string; shown: number }>();
+    try {
+      since = this.store.getMeta("recall-log:since");
+      events = this.store.recallEvents(new Date(this.opts.now().getTime() - 30 * 86400000).toISOString());
+      lastShown = this.store.lastShown();
+    } catch {
+      /* read-only or older catalogue */
+    }
+    const withHits = events.filter((e) => e.hits.length > 0);
+    const counts = new Map<string, number>();
+    for (const e of withHits) for (const h of e.hits) counts.set(h.id, (counts.get(h.id) ?? 0) + 1);
+    const top = [...counts.entries()]
+      .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+      .slice(0, 5)
+      .map(([id, n]) => ({ id, shown: n, problem: this.records.get(id)?.problem ?? null }));
+    const reused = all.filter((d) => projectsOf(d).size >= 2 && evidenceSummary(d).successes > 0).length;
+    return {
+      logging_since: since,
+      recalls_30d: events.length,
+      recalls_with_hits_30d: withHits.length,
+      hit_rate_30d: events.length ? round(withHits.length / events.length) : null,
+      by_origin_30d: Object.fromEntries(
+        ["hook", "mcp", "cli"].map((o) => [o, events.filter((e) => e.origin === o).length]),
+      ),
+      lessons_shown_30d: counts.size,
+      lessons_shown_ever: lastShown.size,
+      lessons_never_shown: all.filter((d) => !lastShown.has(d.id)).length,
+      likely_helped_30d: events.filter((e) => e.helped).length,
+      verified_in_two_or_more_projects: reused,
+      archived: this.archivedIds().size,
+      version_specific_unverified: all.filter((d) => d.applicability?.version && evidenceSummary(d).successes === 0).length,
+      top_shown_30d: top,
     };
   }
 
