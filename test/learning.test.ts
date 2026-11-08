@@ -240,7 +240,7 @@ describe("ongoing maintenance", () => {
       await cat.record({
         ...lesson,
         problem: `unresolved ${String.fromCharCode(97 + i)} condition`,
-        signals: [],
+        signals: [`unresolved signal ${String.fromCharCode(97 + i)}`],
         fix: "",
         context: [String.fromCharCode(97 + i)],
       });

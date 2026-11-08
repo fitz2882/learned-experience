@@ -215,3 +215,93 @@ export function toRecallHit(e: Experience, match: RecallHit["match"]): RecallHit
 export function round(n: number): number {
   return Math.round(n * 1000) / 1000;
 }
+
+// ------------------------------------------------------------ lenient input
+
+const SCOPE_ALIASES: Record<string, keyof Applicability> = {
+  os: "platform",
+  system: "platform",
+  repo: "project",
+  repository: "project",
+  tool: "product",
+  framework: "product",
+  library: "product",
+  package: "product",
+};
+
+function cut(value: unknown, max: number): unknown {
+  if (typeof value !== "string" || value.length <= max) return value;
+  return `${value.slice(0, max - 1).trimEnd()}…`;
+}
+function cutList(value: unknown, items: number, max?: number): unknown {
+  if (!Array.isArray(value)) return value;
+  const list = value.slice(0, items);
+  return max ? list.map((v) => cut(v, max)) : list;
+}
+
+/**
+ * Agents often send a slightly long field or a scope key under another name. Rejecting the whole
+ * call loses the lesson, so trim to the limits and map common scope aliases before validation.
+ * Unknown scope keys become preconditions rather than silently widening a lesson's applicability.
+ */
+export function fitScope(raw: unknown, preconditions: string[] = []): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (v == null || v === "") continue;
+    const key = k.toLowerCase() in Applicability.shape ? k.toLowerCase() : SCOPE_ALIASES[k.toLowerCase()];
+    const text = typeof v === "string" ? v : JSON.stringify(v);
+    if (key && out[key] === undefined) out[key] = cut(text, key === "project" ? 160 : 80);
+    else preconditions.push(String(cut(`${k}: ${text}`, 200)));
+  }
+  return out;
+}
+
+export function fitRecordInput(raw: Record<string, unknown>): Record<string, unknown> {
+  const extra: string[] = [];
+  const out: Record<string, unknown> = {
+    ...raw,
+    problem: cut(raw.problem, 240),
+    signals: cutList(raw.signals, 8, 300),
+    context: cutList(raw.context, 10, 40),
+    attempts: Array.isArray(raw.attempts)
+      ? raw.attempts.slice(0, 12).map((a) => (a && typeof a === "object" ? { ...a, action: cut((a as { action?: unknown }).action, 300) } : a))
+      : raw.attempts,
+    fix: cut(raw.fix, 600),
+    avoid: cutList(raw.avoid, 8, 200),
+    root_cause: cut(raw.root_cause, 300),
+    applicability: fitScope(raw.applicability, extra),
+    claims: cutList(raw.claims, 12),
+    observations: Array.isArray(raw.observations) ? raw.observations.slice(-30).map(fitObservation) : raw.observations,
+  };
+  if (raw.source && typeof raw.source === "object") {
+    const s = raw.source as Record<string, unknown>;
+    out.source = { ...s, agent: cut(s.agent, 60), model: cut(s.model, 80) };
+  }
+  const pre = [...(Array.isArray(raw.preconditions) ? raw.preconditions : []), ...extra];
+  out.preconditions = pre.length ? cutList(pre, 8, 200) : raw.preconditions;
+  return out;
+}
+
+function fitObservation(o: unknown): unknown {
+  if (!o || typeof o !== "object") return o;
+  const x = o as Record<string, unknown>;
+  const at = typeof x.observed_at === "string" ? Date.parse(x.observed_at) : NaN;
+  return {
+    ...x,
+    summary: cut(x.summary, 600),
+    reference: cut(x.reference, 300),
+    observed_at: Number.isNaN(at) ? x.observed_at : new Date(at).toISOString(),
+  };
+}
+
+export function fitFeedbackInput(raw: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...raw,
+    attempt_id: cut(raw.attempt_id, 200),
+    environment: fitScope(raw.environment ?? {}),
+    evidence: raw.evidence ? fitObservation(raw.evidence) : raw.evidence,
+    problem: cut(raw.problem, 240),
+    signals: cutList(raw.signals, 8, 300),
+  };
+}

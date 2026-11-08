@@ -8,10 +8,20 @@ import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { z } from "zod";
 import { evidenceSummary, revisionOf } from "./learning.js";
 import type { Catalogue } from "./catalogue.js";
-import { ExperienceInput, Kind, Outcome, Attempt, Source, Applicability, FeedbackInput, Observation } from "./schema.js";
+import {
+  ExperienceInput,
+  Kind,
+  Outcome,
+  Attempt,
+  Applicability,
+  FeedbackInput,
+  Observation,
+  fitFeedbackInput,
+  fitRecordInput,
+} from "./schema.js";
 
 export const SERVER_NAME = "learned-experience";
-export const SERVER_VERSION = "0.4.0";
+export const SERVER_VERSION = "0.5.0";
 
 export const PROTOCOL = `learned-experience: a local catalogue of lessons, scoped evidence and revision-bound verification votes.
 
@@ -74,13 +84,18 @@ export function buildServer(catalogue: Catalogue, options: ServerOptions): McpSe
         min_score: z.number().min(0).max(1).optional().describe("Drop non-exact hits below this score (default 0.45)"),
         environment: Applicability.optional(),
         include_history: z.boolean().optional().describe("Include superseded records for explicit historical investigation"),
+        include_archived: z
+          .boolean()
+          .optional()
+          .describe("Include lessons unused for a long time; by default they return only on an exact error match"),
+        prefer_project: z.string().max(160).optional().describe("Current project; its lessons rank slightly higher (not a filter)"),
         kinds: z.array(Kind).optional().describe("Restrict to 'episode' or 'rule' records"),
       },
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
     async (args) => {
       try {
-        return json(await catalogue.recall(args));
+        return json(await catalogue.recall({ ...args, log: { origin: "mcp" } }));
       } catch (e) {
         return fail(e);
       }
@@ -94,36 +109,34 @@ export function buildServer(catalogue: Catalogue, options: ServerOptions): McpSe
       description:
         "Store what happened after solving (or failing to solve) a non-trivial problem. Duplicates are merged automatically: " +
         "the response says whether the record was created, merged into an existing one, or linked to one with a different fix. " +
-        "Keep it terse and never include secrets.",
+        "Needs a fix or an exact error signal. New lessons are budgeted per hour; when skipped, the reason says what to do instead. " +
+        "Record what will help a future, different task, not task-specific notes. Keep it terse and never include secrets.",
+      // Lenient on size: over-long text is trimmed and scope aliases are mapped by fitRecordInput
+      // instead of failing the whole call and losing the lesson. Stored limits are unchanged.
       inputSchema: {
-        problem: ExperienceInput.shape.problem,
-        signals: z
-          .array(z.string().min(1).max(300))
-          .max(8)
-          .optional()
-          .describe(ExperienceInput.shape.signals.description ?? ""),
-        context: z
-          .array(z.string().min(1).max(40))
-          .max(10)
-          .optional()
-          .describe(ExperienceInput.shape.context.description ?? ""),
-        attempts: z.array(Attempt).max(12).optional().describe("Ordered attempts and whether each worked"),
-        fix: z.string().max(600).optional().describe("What finally worked, concrete enough to repeat. Omit if unresolved."),
-        avoid: z.array(z.string().min(1).max(200)).max(8).optional().describe("What did not work or made things worse"),
-        root_cause: z.string().max(300).optional().describe("Why it happened, if known"),
+        problem: z.string().min(3).describe("One line, as generic as is accurate (trimmed to 240 characters)"),
+        signals: z.array(z.string().min(1)).optional().describe(`${ExperienceInput.shape.signals.description ?? ""} Up to 8 kept.`),
+        context: z.array(z.string().min(1)).optional().describe(`${ExperienceInput.shape.context.description ?? ""} Up to 10 kept.`),
+        attempts: z.array(z.object({ action: z.string().min(1), result: Attempt.shape.result })).optional().describe("Ordered attempts and whether each worked"),
+        fix: z.string().optional().describe("What finally worked, concrete enough to repeat (trimmed to 600 characters). Omit if unresolved."),
+        avoid: z.array(z.string().min(1)).optional().describe("What did not work or made things worse"),
+        root_cause: z.string().optional().describe("Why it happened, if known"),
         outcome: Outcome,
         kind: Kind.optional().describe("'episode' (default) or 'rule' for a generalisation of several episodes"),
-        applicability: Applicability.optional(),
-        preconditions: ExperienceInput.shape.preconditions,
+        applicability: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe("Exact scope: project, product, version, platform. Other keys are kept as preconditions."),
+        preconditions: z.array(z.string().min(1)).optional(),
         claims: ExperienceInput.shape.claims,
         observations: ExperienceInput.shape.observations,
-        source: Source.optional().describe("Provenance: which agent/model is recording"),
+        source: z.object({ agent: z.string().optional(), model: z.string().optional() }).optional().describe("Provenance: which agent/model is recording"),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async (args) => {
       try {
-        const result = await catalogue.record(ExperienceInput.parse(args));
+        const result = await catalogue.record(ExperienceInput.parse(fitRecordInput(args)));
         const maintenance = await catalogue.maintain(5, 25).catch(() => null);
         return json({ ...result, maintenance_pending: maintenance?.pending ?? null });
       } catch (e) {
@@ -244,12 +257,21 @@ export function buildServer(catalogue: Catalogue, options: ServerOptions): McpSe
     {
       description:
         "Report a checked result for a lesson revision and execution identity. Duplicate observers cannot add votes. Verification requires nonempty fix, matching environment and evidence; diagnostics/relevance are separate. Evidence is reported by the agent, not independently attested by this server.",
-      inputSchema: FeedbackInput.shape,
+      inputSchema: {
+        ...FeedbackInput.shape,
+        attempt_id: z.string().min(1).describe(FeedbackInput.shape.attempt_id.description ?? ""),
+        environment: z.record(z.string(), z.unknown()).describe("project, product, version, platform"),
+        evidence: z
+          .object({ summary: z.string().min(3), reference: z.string().min(3), observed_at: z.string(), level: Observation.shape.level })
+          .optional(),
+        problem: z.string().optional(),
+        signals: z.array(z.string()).optional(),
+      },
       annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false, openWorldHint: false },
     },
     async (args) => {
       try {
-        return json(await catalogue.feedback(args));
+        return json(await catalogue.feedback(FeedbackInput.parse(fitFeedbackInput(args))));
       } catch (e) {
         return fail(e);
       }

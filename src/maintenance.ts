@@ -1,11 +1,30 @@
 import { type Experience, type ExperienceInput, Observation } from "./schema.js";
 import { Store } from "./store.js";
 import { jaccard, tokenize } from "./normalize.js";
-import { cleanObservation, conflictingClaims, digest, mergeCompatible, revisionOf, sameScope, snapshot } from "./learning.js";
+import {
+  cleanObservation,
+  conflictingClaims,
+  digest,
+  evidenceSummary,
+  mergeCompatible,
+  projectsOf,
+  revisionOf,
+  sameScope,
+  snapshot,
+} from "./learning.js";
 
 export interface MaintenanceJob {
   key: string;
-  kind: "incomplete" | "temporary-status" | "unverified" | "conflict" | "duplicate" | "candidate" | "failed-verification";
+  kind:
+    | "incomplete"
+    | "temporary-status"
+    /** No longer queued: reported as a statistic instead. Kept so older queues still parse. */
+    | "unverified"
+    | "conflict"
+    | "duplicate"
+    | "candidate"
+    | "failed-verification"
+    | "promote";
   id: string;
   revision: string;
   related_id?: string;
@@ -33,6 +52,7 @@ export class Maintenance {
       candidate: 1,
       "failed-verification": 2,
       duplicate: 3,
+      promote: 4,
       unverified: 4,
       "temporary-status": 5,
       incomplete: 6,
@@ -85,18 +105,19 @@ export class Maintenance {
             "temporary-status",
             "Fix includes temporary status. Check current evidence; move status to a dated observation when revising.",
           );
-        const verified = (doc.votes ?? []).filter((v) => v.revision === revisionOf(doc) && v.result === "verified-success");
         if (doc.votes?.some((v) => v.revision === revisionOf(doc) && v.result === "verified-failure"))
           propose(
             "failed-verification",
             "A checked application failed. Compare the environment and test evidence before revising the recommendation.",
           );
-        const last = verified
-          .map((v) => v.evidence?.observed_at ?? "")
-          .sort()
-          .at(-1);
-        if (doc.applicability?.version && (!last || this.now().getTime() - Date.parse(last) > 30 * 86400000))
-          propose("unverified", "Version-specific advice has no recent verification. Revalidate before broadening its applicability.");
+        // Version-specific advice without recent verification is common and rarely actionable on its
+        // own, so it is reported by `stats` rather than queued. The queue keeps reviews an agent can act on.
+        const projects = projectsOf(doc);
+        if (doc.kind === "episode" && !doc.family && projects.size >= 2 && evidenceSummary(doc).successes >= 2)
+          propose(
+            "promote",
+            `Verified in ${projects.size} projects. Consider one general rule (record with kind=rule) that states when it applies.`,
+          );
         const candidate = [...(doc.history ?? [])]
           .reverse()
           .find((h) => h.reason === "merge-report" && h.revision !== revisionOf(doc) && h.input.fix !== doc.fix);
@@ -135,6 +156,7 @@ export class Maintenance {
       const d = this.store.get(job.id)?.doc;
       const other = job.related_id ? this.store.get(job.related_id)?.doc : undefined;
       if (
+        job.kind === "unverified" ||
         !d ||
         d.lifecycle === "superseded" ||
         revisionOf(d) !== job.revision ||
