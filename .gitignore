@@ -3,3 +3,4 @@ dist/
 *.db
 *.db-*
 .learned-experience/
+.privacy-patterns

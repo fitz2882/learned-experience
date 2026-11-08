@@ -1,0 +1,3 @@
+#!/bin/sh
+# Local CI gate. Bypass once with: git push --no-verify
+exec npm run -s ci

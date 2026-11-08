@@ -25,7 +25,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "npm run build",
     "smoke": "npm run build && node scripts/smoke.mjs dist/index.js .learned-experience",
-    "quality": "npm run build && node scripts/quality.mjs"
+    "quality": "npm run build && node scripts/quality.mjs",
+    "ci": "node scripts/ci.mjs",
+    "privacy": "node scripts/privacy-check.mjs",
+    "prepare": "node scripts/install-hooks.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
