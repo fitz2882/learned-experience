@@ -273,6 +273,19 @@ npm run quality   # real-model MCP voting, correction, abstention and hook repla
 npm run smoke     # builds, then drives the real server over stdio with the real local model
 ```
 
+### Local CI
+
+There is no hosted CI. `npm install` points git at `.githooks/`, and the `pre-push` hook runs `npm run ci`, which takes about 10 seconds:
+
+1. privacy check: no real email addresses or home-folder user names in tracked files or unpushed commit messages
+2. typecheck
+3. unit tests
+4. build
+5. smoke test over stdio
+6. real-model quality checks
+
+Put private terms such as names or folder names in `.privacy-patterns`, one regex per line. That file is git-ignored, so the terms themselves stay private. `LE_CI_SKIP=quality,smoke` skips steps, and `git push --no-verify` bypasses the hook once.
+
 Design rationale, the retrieval fusion, and the dedup rules are in [DESIGN.md](DESIGN.md).
 
 ## License
