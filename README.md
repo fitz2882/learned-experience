@@ -292,19 +292,8 @@ Design rationale, the retrieval fusion, and the dedup rules are in [DESIGN.md](D
 
 MIT
 
-### Temporary dependency security pins
+### Dependency security
 
-Repository installs pin `adm-zip` to 0.6.0 under `onnxruntime-node` and `sharp`
-to 0.35.0 under `@huggingface/transformers` to address GHSA-xcpc-8h2w-3j85
-and GHSA-f88m-g3jw-g9cj. The parent packages currently request older ranges.
-The offline suite checks the actual ZIP extraction and Transformers image APIs
-against these patched versions; no model downloads are needed for those tests.
-
-These npm overrides protect installs made from this repository as the install
-root. npm ignores dependency-owned overrides when this package is installed
-through another project or `npx`; this change alone does **not** remediate the
-published package. Before a release claims these fixes, update the upstream
-ranges or adopt and verify a published dependency-locking strategy with an
-isolated consumer-install test. See [npm override semantics](https://docs.npmjs.com/cli/v11/configuring-npm/package-json#overrides).
+There are no npm `overrides`. The current `@huggingface/transformers` and `onnxruntime-node` releases already depend on the patched `sharp` and `adm-zip`, so consumer installs through `npx` or another project get the fixes too. `npm audit` reports 0 vulnerabilities. The offline suite still exercises the ZIP extraction and Transformers image APIs against the installed versions.
 
 Codex hook commands use `learned-experience hook --codex` to emit schema-compatible context only in `hookSpecificOutput.additionalContext`. Existing registrations with Codex’s `turn_id` payload are detected automatically. Claude Code and Gemini retain their existing output format.
