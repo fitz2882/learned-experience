@@ -46,7 +46,7 @@ codex plugin marketplace add fitz2882/learned-experience
 codex plugin add learned-experience
 ```
 
-The marketplace plugins pin their server and hook commands to a tested npm release. Marketplace version 0.4.1 updates the logo and descriptions and continues to use runtime 0.4.0. To update Claude Code, run `claude plugin marketplace update learned-experience` followed by `claude plugin update learned-experience@learned-experience`. For Codex, run `codex plugin marketplace upgrade learned-experience` followed by `codex plugin add learned-experience@learned-experience`. Restart existing host sessions after updating.
+The marketplace plugins pin their server and hook commands to a tested npm release. Marketplace version 0.5.0 uses runtime 0.5.0. To update Claude Code, run `claude plugin marketplace update learned-experience` followed by `claude plugin update learned-experience@learned-experience`. For Codex, run `codex plugin marketplace upgrade learned-experience` followed by `codex plugin add learned-experience@learned-experience`. Restart existing host sessions after updating.
 
 **One catalogue for all of them.** Every host launches the same server, and the server reads the same database, so a lesson recorded in Codex is recalled in Claude Code, Gemini, Cursor, or OpenClaw, and vice versa.
 
